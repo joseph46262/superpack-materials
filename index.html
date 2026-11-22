@@ -356,9 +356,6 @@
 </div>
 
 <script>
-    // ==========================================
-    // إعدادات Firebase والمزامنة التلقائية
-    // ==========================================
     const FIREBASE_DB_URL = "https://superpack-material-warehouse-default-rtdb.firebaseio.com";
     const FIREBASE_NODE_PATH = "superpack_warehouse_v1";
 
@@ -371,6 +368,7 @@
         records: 'ws_records_v3'
     };
     let currentTab = 'shortages';
+    let isSyncingFromCloud = false;
 
     const defaultShapes = {
         "ماسورة": ["قطر", "سمك", "طول"],
@@ -488,15 +486,20 @@
     }
 
     async function loadCloudDataOnStartup() {
+        if (isSyncingFromCloud) return;
         const endpoint = getFirebaseEndpoint();
         if (!endpoint) {
             setSyncStatus("وضع محلي (أضف رابط Firebase DB للمزامنة بين المستخدمين)");
             return;
         }
 
+        isSyncingFromCloud = true;
         setSyncStatus("جاري قراءة أحدث البيانات المشتركة تلقائياً...");
         try {
-            const res = await fetch(endpoint, { method: "GET" });
+            const res = await fetch(`${endpoint}?t=${Date.now()}`, {
+                method: "GET",
+                cache: "no-store"
+            });
             if (!res.ok) {
                 const errText = await res.text();
                 console.error("Firebase GET error:", res.status, errText);
@@ -530,6 +533,8 @@
         } catch (err) {
             console.error("Network error on startup load:", err);
             setSyncStatus("تعذر قراءة السحابة — يتم عرض النسخة المحلية");
+        } finally {
+            isSyncingFromCloud = false;
         }
     }
 
@@ -538,6 +543,12 @@
             navigator.serviceWorker.register('./sw.js').catch(() => {});
         }
     }
+
+    document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') {
+            loadCloudDataOnStartup();
+        }
+    });
 
     window.onload = async function() {
         registerServiceWorker();
@@ -631,4 +642,590 @@
     }
 
     function findDuplicateInShortages(candidateShape, candidateMaterial, candidateDimsList) {
-        const candidateCmDims = candidateDimsList
+        const candidateCmDims = candidateDimsList.map(d => ({
+            name: d.name,
+            cm: toCm(parseFloat(d.value) || 0, d.unit)
+        }));
+
+        for (let i = 0; i < records.shortages.length; i++) {
+            const existing = records.shortages[i];
+            if (existing.shape !== candidateShape || existing.material !== candidateMaterial) {
+                continue;
+            }
+
+            const existingCmDims = getNormalizedDimensionsCm(existing);
+            if (existingCmDims.length !== candidateCmDims.length) {
+                continue;
+            }
+
+            let allDimsMatchInCm = true;
+            for (let j = 0; j < candidateCmDims.length; j++) {
+                const diff = Math.abs(existingCmDims[j].cm - candidateCmDims[j].cm);
+                if (diff > 0.0001) {
+                    allDimsMatchInCm = false;
+                    break;
+                }
+            }
+
+            if (allDimsMatchInCm) {
+                return existing;
+            }
+        }
+        return null;
+    }
+
+    function showValidationError(message, targetElement = null) {
+        const errorBox = document.getElementById('validation-error-box');
+        errorBox.style.display = 'block';
+        errorBox.innerHTML = `⚠️ ${message}<br><span style="font-weight:400; font-size:0.82rem;">يرجى إدخال كافة البيانات من أبعاد ومقاسات كاملة وواضحة حتى يتم التسجيل.</span>`;
+
+        if (targetElement) {
+            targetElement.classList.add('input-error');
+            targetElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        } else {
+            errorBox.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+    }
+
+    function clearValidationError() {
+        const errorBox = document.getElementById('validation-error-box');
+        errorBox.style.display = 'none';
+        errorBox.innerHTML = '';
+        document.querySelectorAll('.input-error').forEach(el => el.classList.remove('input-error'));
+    }
+
+    function clearFieldError(element) {
+        if (element) {
+            element.classList.remove('input-error');
+        }
+        if (document.querySelectorAll('.input-error').length === 0) {
+            document.getElementById('validation-error-box').style.display = 'none';
+        }
+    }
+
+    function validateRecordInputs() {
+        clearValidationError();
+
+        const dateInput = document.getElementById('item-date');
+        const shapeSelect = document.getElementById('shape-select');
+        const materialSelect = document.getElementById('material-select');
+        const qtyInput = document.getElementById('item-qty');
+
+        if (!dateInput.value) {
+            showValidationError("التاريخ غير محدد: يرجى اختيار تاريخ صحيح للحدث قبل التسجيل.", dateInput);
+            return null;
+        }
+
+        const shape = shapeSelect.value.trim();
+        if (!shape || !shapes[shape]) {
+            showValidationError("شكل الخامة غير معرف أو غير محدد: يرجى اختيار شكل الخامة.", shapeSelect);
+            return null;
+        }
+
+        const material = materialSelect.value.trim();
+        if (!material || materials[material] === undefined) {
+            showValidationError("نوع الخامة غير معرف أو غير محدد: يرجى اختيار نوع الخامة.", materialSelect);
+            return null;
+        }
+
+        const dimInputs = document.querySelectorAll('.dim-val');
+        const unitSelects = document.querySelectorAll('.dim-unit');
+        const expectedDims = shapes[shape];
+
+        if (!expectedDims || dimInputs.length !== expectedDims.length) {
+            showValidationError(`أبعاد الشكل (${shape}) غير مكتملة: يرجى إعادة اختيار الشكل لتحديث حقول الأبعاد.`, shapeSelect);
+            return null;
+        }
+
+        let dimensionsText = [];
+        let dimensionsList = [];
+
+        for (let i = 0; i < dimInputs.length; i++) {
+            const dimName = dimInputs[i].getAttribute('data-name') || expectedDims[i];
+            const rawVal = dimInputs[i].value.trim();
+            const numVal = parseFloat(rawVal);
+            const unitVal = unitSelects[i].value.trim();
+
+            if (rawVal === "" || isNaN(numVal) || numVal <= 0) {
+                showValidationError(
+                    `بُعد "${dimName}" لشكل (${shape}) غير معرف أو غير صحيح: يرجى إدخال مقاس رقمي أكبر من الصفر لـ "${dimName}".`,
+                    dimInputs[i]
+                );
+                return null;
+            }
+
+            if (!ALLOWED_UNITS.includes(unitVal)) {
+                showValidationError(
+                    `وحدة القياس لبُعد "${dimName}" غير محددة بشكل صحيح: يرجى اختيار وحدة (mm أو cm أو m).`,
+                    unitSelects[i]
+                );
+                return null;
+            }
+
+            dimensionsList.push({
+                name: dimName,
+                value: numVal,
+                unit: unitVal
+            });
+            dimensionsText.push(`${dimName}: ${numVal} ${unitVal}`);
+        }
+
+        const rawQty = qtyInput.value.trim();
+        const qtyVal = parseFloat(rawQty);
+        if (rawQty === "" || isNaN(qtyVal) || qtyVal <= 0) {
+            showValidationError("الكمية / العدد غير محددة أو غير صحيحة: يرجى إدخال كمية أكبر من الصفر.", qtyInput);
+            return null;
+        }
+
+        return {
+            date: dateInput.value,
+            shape: shape,
+            material: material,
+            qty: qtyVal,
+            dimensionsText: dimensionsText.join(' × '),
+            dimensionsList: dimensionsList
+        };
+    }
+
+    function calculateWeight() {
+        const shape = document.getElementById('shape-select').value;
+        const material = document.getElementById('material-select').value;
+        const density = parseFloat(materials[material]) || 7.85;
+        const qty = parseFloat(document.getElementById('item-qty').value) || 1;
+
+        const dimInputs = document.querySelectorAll('.dim-val');
+        const unitSelects = document.querySelectorAll('.dim-unit');
+        
+        let d = {};
+        for (let i = 0; i < dimInputs.length; i++) {
+            const name = dimInputs[i].getAttribute('data-name');
+            const val = parseFloat(dimInputs[i].value) || 0;
+            const unit = unitSelects[i].value;
+            d[name] = toCm(val, unit);
+        }
+
+        let volumeCm3 = 0;
+        const diameter = d["قطر"] || d["القطر"] || d["القطر الخارجي"] || 0;
+        const thickness = d["سمك"] || d["السمك"] || 0;
+        const length = d["طول"] || d["الطول"] || 0;
+        const width = d["عرض"] || d["العرض"] || 0;
+        const height = d["ارتفاع"] || d["الارتفاع"] || width;
+
+        if (shape === "عمود" || shape === "اكس براس") {
+            const r = diameter / 2;
+            volumeCm3 = Math.PI * Math.pow(r, 2) * length;
+        }
+        else if (shape.startsWith("ماسورة")) {
+            const rOut = diameter / 2;
+            const rIn = Math.max(0, rOut - thickness);
+            volumeCm3 = Math.PI * (Math.pow(rOut, 2) - Math.pow(rIn, 2)) * length;
+        }
+        else if (shape === "فلانشة" || shape === "طنابير") {
+            const rOut = diameter / 2;
+            const rIn = Math.max(0, rOut - thickness);
+            const h = length > 0 ? length : thickness;
+            volumeCm3 = Math.PI * (Math.pow(rOut, 2) - Math.pow(rIn, 2)) * h;
+        }
+        else if (shape === "لوح" || shape === "خوصة" || shape === "شريحة") {
+            volumeCm3 = width * thickness * length;
+        }
+        else if (shape === "علبة") {
+            const wIn = Math.max(0, width - (2 * thickness));
+            const hIn = Math.max(0, height - (2 * thickness));
+            volumeCm3 = Math.max(0, (width * height) - (wIn * hIn)) * length;
+        }
+        else if (shape === "علبة مربعة") {
+            const wIn = Math.max(0, width - (2 * thickness));
+            volumeCm3 = (Math.pow(width, 2) - Math.pow(wIn, 2)) * length;
+        }
+        else if (shape === "مسدس") {
+            const area = (Math.sqrt(3) / 2) * Math.pow(width, 2);
+            volumeCm3 = area * length;
+        }
+        else if (shape === "كمرة U") {
+            const area = ((width + (2 * height) - (2 * thickness)) * thickness);
+            volumeCm3 = Math.max(0, area) * length;
+        }
+        else if (shape === "زاوية") {
+            const t = thickness > 0 ? thickness : 0.5;
+            const area = ((width + height - t) * t);
+            volumeCm3 = Math.max(0, area) * (length > 0 ? length : 1);
+        }
+        else if (shape === "مربع") {
+            volumeCm3 = Math.pow(width, 2) * (length > 0 ? length : 1);
+        }
+        else {
+            const vals = Object.values(d).filter(v => v > 0);
+            if (vals.length > 0) {
+                volumeCm3 = vals.reduce((acc, curr) => acc * curr, 1);
+            }
+        }
+
+        const singleWeightKg = (volumeCm3 * density) / 1000;
+        const totalWeightKg = singleWeightKg * qty;
+
+        return {
+            single: singleWeightKg.toFixed(2),
+            total: totalWeightKg.toFixed(2)
+        };
+    }
+
+    function updateLiveWeight() {
+        const w = calculateWeight();
+        document.getElementById('live-weight-box').innerText = 
+            `الوزن التقريبي: ${w.total} كجم (للقطعة: ${w.single} كجم)`;
+    }
+
+    function switchTab(tab) {
+        currentTab = tab;
+        clearValidationError();
+        document.querySelectorAll('.nav-btn').forEach(btn => btn.classList.remove('active'));
+        document.getElementById('tab-' + tab).classList.add('active');
+
+        const mainForm = document.getElementById('main-form-section');
+        const recordsSec = document.getElementById('records-section');
+        const adminSec = document.getElementById('admin-section');
+
+        if (tab === 'admin') {
+            mainForm.style.display = 'none';
+            recordsSec.style.display = 'none';
+            adminSec.style.display = 'block';
+            renderAdminLists();
+        } else if (tab === 'purchases') {
+            mainForm.style.display = 'none';
+            recordsSec.style.display = 'block';
+            adminSec.style.display = 'none';
+            document.getElementById('list-title').innerText = 'سجل المشتريات (الواردة من النواقص)';
+            renderRecords();
+        } else {
+            mainForm.style.display = 'block';
+            recordsSec.style.display = 'block';
+            adminSec.style.display = 'none';
+            document.getElementById('form-title').innerText = 'إضافة إلى قائمة النواقص';
+            document.getElementById('date-label').innerText = 'تاريخ تسجيل النقص:';
+            document.getElementById('list-title').innerText = 'سجل النواقص (علم "تم الشراء" للنقل للمشتريات)';
+            renderRecords();
+        }
+    }
+
+    async function addRecord() {
+        if (currentTab !== 'shortages') {
+            return;
+        }
+
+        const validated = validateRecordInputs();
+        if (!validated) {
+            return;
+        }
+
+        const duplicate = findDuplicateInShortages(
+            validated.shape,
+            validated.material,
+            validated.dimensionsList
+        );
+
+        if (duplicate) {
+            const cmSummary = getNormalizedDimensionsCm(duplicate)
+                .map(d => `${d.name}: ${Number(d.cm.toFixed(4))} cm`)
+                .join(' × ');
+
+            const errorBox = document.getElementById('validation-error-box');
+            errorBox.style.display = 'block';
+            errorBox.innerHTML = `⚠️ هذه الخامة مسجلة من قبل في النواقص بنفس الشكل (${validated.shape}) ونوع الخامة (${validated.material}) ونفس الأبعاد بالـ سم (${cmSummary}).<br><span style="font-weight:400; font-size:0.82rem;">المسجل مسبقاً: ${duplicate.dimensions} — لن يتم تسجيل البند مكرراً.</span>`;
+            errorBox.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            return;
+        }
+
+        const weightData = calculateWeight();
+
+        const newRecord = {
+            id: Date.now(),
+            date: validated.date,
+            purchaseDate: null,
+            shape: validated.shape,
+            dimensions: validated.dimensionsText,
+            dimensionsList: validated.dimensionsList,
+            material: validated.material,
+            qty: validated.qty,
+            weight: weightData.total
+        };
+
+        records.shortages.unshift(newRecord);
+        await saveAndSyncAll();
+        
+        document.querySelectorAll('.dim-val').forEach(input => input.value = '');
+        updateLiveWeight();
+        renderRecords();
+    }
+
+    async function moveToPurchases(id) {
+        const itemIndex = records.shortages.findIndex(item => item.id === id);
+        if (itemIndex === -1) return;
+
+        const today = new Date().toISOString().split('T')[0];
+        const pDate = prompt("تم شراء هذه الخامة! أدخل تاريخ الشراء (سنة-شهر-يوم):", today);
+
+        if (pDate !== null && pDate.trim() !== "") {
+            const item = records.shortages[itemIndex];
+            item.purchaseDate = pDate.trim();
+
+            records.purchases.unshift(item);
+            records.shortages.splice(itemIndex, 1);
+
+            await saveAndSyncAll();
+            renderRecords();
+            alert("تم نقل الصنف إلى قائمة المشتريات بنجاح!");
+        } else {
+            renderRecords();
+        }
+    }
+
+    function renderRecords() {
+        const listContainer = document.getElementById('records-list');
+        const currentList = records[currentTab];
+        listContainer.innerHTML = '';
+
+        if (currentList.length === 0) {
+            const emptyMsg = currentTab === 'purchases'
+                ? 'لا توجد مشتريات بعد. سجّل الصنف في "النواقص" أولاً ثم علّم "تم الشراء" لنقله هنا.'
+                : 'لا توجد بيانات مسجلة في النواقص حتى الآن.';
+            listContainer.innerHTML = `<p style="text-align:center; color:#94a3b8;">${emptyMsg}</p>`;
+            return;
+        }
+
+        currentList.forEach(item => {
+            const checkboxHTML = currentTab === 'shortages' 
+                ? `<div class="transfer-box">
+                        <input type="checkbox" onchange="moveToPurchases(${item.id})" title="نقل إلى المشتريات">
+                        <span>تم الشراء</span>
+                   </div>` 
+                : '';
+
+            const dateDisplay = currentTab === 'shortages'
+                ? `<span class="item-date">تاريخ النقص: ${item.date}</span>`
+                : `<span class="item-date">تاريخ الشراء: <strong>${item.purchaseDate || item.date}</strong> ${item.purchaseDate && item.purchaseDate !== item.date ? `(طُلب في: ${item.date})` : ''}</span>`;
+
+            listContainer.innerHTML += `
+                <div class="item-card ${currentTab === 'purchases' ? 'purchased' : ''}">
+                    ${checkboxHTML}
+                    <div class="item-details">
+                        <strong>${item.shape} - ${item.material}</strong> (العدد: ${item.qty})<br>
+                        <span>${item.dimensions}</span><br>
+                        <span class="badge-weight">الوزن التقريبي: ${item.weight || '0.00'} كجم</span>
+                        ${dateDisplay}
+                    </div>
+                    <button class="btn btn-danger" onclick="deleteRecord(${item.id})">حذف</button>
+                </div>
+            `;
+        });
+    }
+
+    async function deleteRecord(id) {
+        if (confirm("هل أنت متأكد من حذف هذا البند؟")) {
+            records[currentTab] = records[currentTab].filter(item => item.id !== id);
+            await saveAndSyncAll();
+            renderRecords();
+        }
+    }
+
+    function verifyAdmin() {
+        const pass = document.getElementById('admin-pass').value;
+        if (pass === ADMIN_PASSWORD) {
+            document.getElementById('admin-login-box').style.display = 'none';
+            document.getElementById('admin-controls').style.display = 'block';
+            renderAdminLists();
+        } else {
+            alert("كلمة المرور غير صحيحة!");
+        }
+    }
+
+    function renderAdminLists() {
+        const matListEl = document.getElementById('admin-materials-list');
+        if (matListEl) {
+            matListEl.innerHTML = '';
+            Object.keys(materials).forEach(matName => {
+                const density = materials[matName];
+                const encodedName = encodeURIComponent(matName);
+                matListEl.innerHTML += `
+                    <div class="admin-row">
+                        <div class="admin-row-info">
+                            <strong>${matName}</strong><br>
+                            <span style="color:#64748b; font-size:0.8rem;">الكثافة: ${density} جم/سم³</span>
+                        </div>
+                        <div class="admin-row-actions">
+                            <button class="btn btn-edit" onclick="startEditMaterial(decodeURIComponent('${encodedName}'))">تعديل</button>
+                            <button class="btn btn-danger" onclick="deleteMaterial(decodeURIComponent('${encodedName}'))">حذف</button>
+                        </div>
+                    </div>
+                `;
+            });
+        }
+
+        const shapeListEl = document.getElementById('admin-shapes-list');
+        if (shapeListEl) {
+            shapeListEl.innerHTML = '';
+            Object.keys(shapes).forEach(shapeName => {
+                const dimsText = (shapes[shapeName] || []).join(' / ');
+                const encodedShape = encodeURIComponent(shapeName);
+                shapeListEl.innerHTML += `
+                    <div class="admin-row">
+                        <div class="admin-row-info">
+                            <strong>${shapeName}</strong><br>
+                            <span style="color:#64748b; font-size:0.8rem;">الأبعاد: ${dimsText}</span>
+                        </div>
+                        <div class="admin-row-actions">
+                            <button class="btn btn-edit" onclick="startEditShape(decodeURIComponent('${encodedShape}'))">تعديل</button>
+                            <button class="btn btn-danger" onclick="deleteShape(decodeURIComponent('${encodedShape}'))">حذف</button>
+                        </div>
+                    </div>
+                `;
+            });
+        }
+    }
+
+    async function addNewMaterial() {
+        const newMat = document.getElementById('new-material-name').value.trim();
+        const densityRaw = document.getElementById('new-material-density').value.trim();
+        const newDensity = parseFloat(densityRaw);
+
+        if (!newMat) {
+            alert("يرجى إدخال اسم الخامة.");
+            return;
+        }
+        if (materials[newMat] !== undefined) {
+            alert("هذه الخامة موجودة بالفعل. يمكنك تعديلها من القائمة بالأسفل.");
+            return;
+        }
+        if (densityRaw === "" || isNaN(newDensity) || newDensity <= 0) {
+            alert("يرجى إدخال كثافة نوعية صحيحة أكبر من الصفر (جم/سم³).");
+            return;
+        }
+
+        materials[newMat] = newDensity;
+        await saveAndSyncAll();
+        populateDropdowns();
+        updateLiveWeight();
+        renderAdminLists();
+        document.getElementById('new-material-name').value = '';
+        document.getElementById('new-material-density').value = '';
+        alert("تمت إضافة الخامة وكثافتها بنجاح!");
+    }
+
+    function startEditMaterial(matName) {
+        if (materials[matName] === undefined) return;
+        document.getElementById('edit-material-original-name').value = matName;
+        document.getElementById('edit-material-name').value = matName;
+        document.getElementById('edit-material-density').value = materials[matName];
+        const panel = document.getElementById('edit-material-panel');
+        panel.style.display = 'block';
+        panel.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+
+    function cancelEditMaterial() {
+        document.getElementById('edit-material-panel').style.display = 'none';
+        document.getElementById('edit-material-original-name').value = '';
+        document.getElementById('edit-material-name').value = '';
+        document.getElementById('edit-material-density').value = '';
+    }
+
+    async function saveEditedMaterial() {
+        const oldName = document.getElementById('edit-material-original-name').value;
+        const newName = document.getElementById('edit-material-name').value.trim();
+        const densityRaw = document.getElementById('edit-material-density').value.trim();
+        const newDensity = parseFloat(densityRaw);
+
+        if (!newName) {
+            alert("يرجى إدخال اسم الخامة.");
+            return;
+        }
+        if (newName !== oldName && materials[newName] !== undefined) {
+            alert("يوجد خامة أخرى بهذا الاسم بالفعل.");
+            return;
+        }
+        if (densityRaw === "" || isNaN(newDensity) || newDensity <= 0) {
+            alert("يرجى إدخال كثافة نوعية صحيحة أكبر من الصفر.");
+            return;
+        }
+
+        const updatedMaterials = {};
+        Object.keys(materials).forEach(key => {
+            if (key === oldName) {
+                updatedMaterials[newName] = newDensity;
+            } else {
+                updatedMaterials[key] = materials[key];
+            }
+        });
+        materials = updatedMaterials;
+
+        if (newName !== oldName) {
+            records.shortages.forEach(item => {
+                if (item.material === oldName) item.material = newName;
+            });
+            records.purchases.forEach(item => {
+                if (item.material === oldName) item.material = newName;
+            });
+        }
+
+        await saveAndSyncAll();
+        populateDropdowns();
+        updateLiveWeight();
+        renderRecords();
+        renderAdminLists();
+        cancelEditMaterial();
+        alert("تم حفظ تعديل الخامة والكثافة بنجاح!");
+    }
+
+    async function deleteMaterial(matName) {
+        const keys = Object.keys(materials);
+        if (keys.length <= 1) {
+            alert("لا يمكن حذف آخر خامة متبقية في البرنامج.");
+            return;
+        }
+        if (!confirm(`هل أنت متأكد من حذف الخامة "${matName}"؟`)) {
+            return;
+        }
+
+        delete materials[matName];
+        if (document.getElementById('edit-material-original-name').value === matName) {
+            cancelEditMaterial();
+        }
+        await saveAndSyncAll();
+        populateDropdowns();
+        updateLiveWeight();
+        renderAdminLists();
+    }
+
+    async function addNewShape() {
+        const shapeName = document.getElementById('new-shape-name').value.trim();
+        const dimsRaw = document.getElementById('new-shape-dims').value.trim();
+        
+        if (!shapeName || !dimsRaw) {
+            alert("يرجى إدخال اسم الشكل والأبعاد المعرفة له.");
+            return;
+        }
+        if (shapes[shapeName]) {
+            alert("هذا الشكل موجود بالفعل. يمكنك تعديله من القائمة بالأسفل.");
+            return;
+        }
+
+        const dimsArray = dimsRaw.split(',').map(d => d.trim()).filter(d => d !== "");
+        if (dimsArray.length === 0) {
+            alert("يرجى إدخال بُعد واحد على الأقل.");
+            return;
+        }
+
+        shapes[shapeName] = dimsArray;
+        await saveAndSyncAll();
+        populateDropdowns();
+        renderDimensionInputs();
+        updateLiveWeight();
+        renderAdminLists();
+        document.getElementById('new-shape-name').value = '';
+        document.getElementById('new-shape-dims').value = '';
+        alert("تمت إضافة الشكل الهندسي وأبعاده بنجاح!");
+    }
+
+    function startEditShape(shapeName) {
+        if (!shapes[shapeName]) return;
+        document.getElementById('edit-shape-original-name').value = shapeName;
+        document
