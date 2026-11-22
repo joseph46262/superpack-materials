@@ -231,7 +231,7 @@
 
 <header>تسجيل خامات سوبرباك لتصنيع ماكينات التعبئة والتغليف</header>
 <div class="sync-bar">
-    <span id="sync-status">جاهز للعمل</span>
+    <span id="sync-status">v5 — جاهز للعمل</span>
     <button type="button" class="sync-btn" onclick="loadCloudDataOnStartup()">تحديث الآن</button>
 </div>
 
@@ -549,11 +549,11 @@
         saveLocalOnly();
         const endpoint = getFirebaseEndpoint();
         if (!endpoint) {
-            setSyncStatus("وضع محلي (أضف رابط Firebase DB للمزامنة بين المستخدمين)");
+            setSyncStatus("v5 — وضع محلي");
             return;
         }
 
-        setSyncStatus("جاري مزامنة التحديث مع السحابة...");
+        setSyncStatus("v5 — جاري المزامنة...");
         try {
             const payload = sanitizeForFirebase();
 
@@ -564,15 +564,14 @@
             }, 6000);
 
             if (res.ok) {
-                setSyncStatus(`تمت المزامنة (نواقص: ${payload.records.shortages.length} | مشتريات: ${payload.records.purchases.length})`);
+                setSyncStatus(`v5 — متزامن (نواقص: ${payload.records.shortages.length} | مشتريات: ${payload.records.purchases.length})`);
             } else {
                 const errText = await res.text();
-                console.error("Firebase PUT error:", res.status, errText);
-                setSyncStatus(`تعذر رفع التحديث للسحابة (كود ${res.status}) — محفوظ محلياً`);
+                const shortReason = String(errText || '').replace(/\s+/g, ' ').slice(0, 80);
+                setSyncStatus(`v5 — كود ${res.status}: ${shortReason || 'محفوظ محلياً'}`);
             }
         } catch (err) {
-            console.error("Network error while syncing:", err);
-            setSyncStatus("تعذر رفع التحديث للسحابة — محفوظ محلياً");
+            setSyncStatus("v5 — تعذر الرفع (محفوظ محلياً)");
         }
     }
 
@@ -580,12 +579,12 @@
         if (isSyncingFromCloud) return;
         const endpoint = getFirebaseEndpoint();
         if (!endpoint) {
-            setSyncStatus("وضع محلي (أضف رابط Firebase DB للمزامنة بين المستخدمين)");
+            setSyncStatus("v5 — وضع محلي");
             return;
         }
 
         isSyncingFromCloud = true;
-        setSyncStatus("جاري قراءة البيانات من Firebase...");
+        setSyncStatus("v5 — جاري القراءة...");
         try {
             const res = await fetchWithTimeout(`${endpoint}?t=${Date.now()}`, {
                 method: "GET",
@@ -594,8 +593,8 @@
 
             if (!res.ok) {
                 const errText = await res.text();
-                console.error("Firebase GET error:", res.status, errText);
-                setSyncStatus(`تعذر قراءة السحابة (كود ${res.status})`);
+                const shortReason = String(errText || '').replace(/\s+/g, ' ').slice(0, 80);
+                setSyncStatus(`v5 — قراءة كود ${res.status}: ${shortReason}`);
                 return;
             }
 
@@ -619,13 +618,12 @@
                 updateLiveWeight();
                 renderRecords();
                 renderAdminLists();
-                setSyncStatus(`متصل بالسحابة (نواقص: ${records.shortages.length} | مشتريات: ${records.purchases.length})`);
+                setSyncStatus(`v5 — متصل (نواقص: ${records.shortages.length} | مشتريات: ${records.purchases.length})`);
             } else {
-                setSyncStatus("السحابة متصلة ولكن لا توجد بيانات مسجلة بعد (0)");
+                setSyncStatus("v5 — متصل (لا توجد بيانات مسجلة بعد)");
             }
         } catch (err) {
-            console.error("Network error on startup load:", err);
-            setSyncStatus("تعذر الاتصال بالسحابة — تأكد من الإنترنت");
+            setSyncStatus("v5 — تعذر الاتصال بالسحابة");
         } finally {
             isSyncingFromCloud = false;
         }
@@ -635,6 +633,15 @@
         if ('serviceWorker' in navigator) {
             navigator.serviceWorker.register('./sw.js').catch(() => {});
         }
+    }
+
+    let appStarted = false;
+    function startAppOnce() {
+        if (appStarted) return;
+        appStarted = true;
+        initAppUI();
+        registerServiceWorker();
+        loadCloudDataOnStartup();
     }
 
     function initAppUI() {
@@ -659,11 +666,10 @@
         }
     });
 
-    window.addEventListener('DOMContentLoaded', () => {
-        initAppUI();
-        registerServiceWorker();
-        loadCloudDataOnStartup();
-    });
+    window.addEventListener('DOMContentLoaded', startAppOnce);
+    if (document.readyState === 'interactive' || document.readyState === 'complete') {
+        startAppOnce();
+    }
 
     function populateDropdowns() {
         const shapeSelect = document.getElementById('shape-select');
@@ -1063,4 +1069,460 @@
     }
 
     async function moveToPurchases(id) {
-        const itemIndex = records.shortages.findIndex(item =>
+        const itemIndex = records.shortages.findIndex(item => item.id === id);
+        if (itemIndex === -1) return;
+
+        const today = new Date().toISOString().split('T')[0];
+        const pDate = prompt("تم شراء هذه الخامة! أدخل تاريخ الشراء (سنة-شهر-يوم):", today);
+
+        if (pDate !== null && pDate.trim() !== "") {
+            const item = records.shortages[itemIndex];
+            item.purchaseDate = pDate.trim();
+
+            records.purchases.unshift(item);
+            records.shortages.splice(itemIndex, 1);
+
+            await saveAndSyncAll();
+            renderRecords();
+            alert("تم نقل الصنف إلى قائمة المشتريات بنجاح!");
+        } else {
+            renderRecords();
+        }
+    }
+
+    function renderRecords() {
+        const listContainer = document.getElementById('records-list');
+        const currentList = records[currentTab] || [];
+        listContainer.innerHTML = '';
+
+        if (currentList.length === 0) {
+            const emptyMsg = currentTab === 'purchases'
+                ? 'لا توجد مشتريات بعد. سجّل الصنف في "النواقص" أولاً ثم علّم "تم الشراء" لنقله هنا.'
+                : 'لا توجد بيانات مسجلة في النواقص حتى الآن.';
+            listContainer.innerHTML = `<p style="text-align:center; color:#94a3b8;">${emptyMsg}</p>`;
+            return;
+        }
+
+        currentList.forEach(item => {
+            const checkboxHTML = currentTab === 'shortages' 
+                ? `<div class="transfer-box">
+                        <input type="checkbox" onchange="moveToPurchases(${item.id})" title="نقل إلى المشتريات">
+                        <span>تم الشراء</span>
+                   </div>` 
+                : '';
+
+            const dateDisplay = currentTab === 'shortages'
+                ? `<span class="item-date">تاريخ النقص: ${item.date}</span>`
+                : `<span class="item-date">تاريخ الشراء: <strong>${item.purchaseDate || item.date}</strong> ${item.purchaseDate && item.purchaseDate !== item.date ? `(طُلب في: ${item.date})` : ''}</span>`;
+
+            listContainer.innerHTML += `
+                <div class="item-card ${currentTab === 'purchases' ? 'purchased' : ''}">
+                    ${checkboxHTML}
+                    <div class="item-details">
+                        <strong>${item.shape} - ${item.material}</strong> (العدد: ${item.qty})<br>
+                        <span>${item.dimensions}</span><br>
+                        <span class="badge-weight">الوزن التقريبي: ${item.weight || '0.00'} كجم</span>
+                        ${dateDisplay}
+                    </div>
+                    <button class="btn btn-danger" onclick="deleteRecord(${item.id})">حذف</button>
+                </div>
+            `;
+        });
+    }
+
+    async function deleteRecord(id) {
+        if (confirm("هل أنت متأكد من حذف هذا البند؟")) {
+            records[currentTab] = records[currentTab].filter(item => item.id !== id);
+            await saveAndSyncAll();
+            renderRecords();
+        }
+    }
+
+    function verifyAdmin() {
+        const pass = document.getElementById('admin-pass').value;
+        if (pass === ADMIN_PASSWORD) {
+            document.getElementById('admin-login-box').style.display = 'none';
+            document.getElementById('admin-controls').style.display = 'block';
+            renderAdminLists();
+        } else {
+            alert("كلمة المرور غير صحيحة!");
+        }
+    }
+
+    function renderAdminLists() {
+        const matListEl = document.getElementById('admin-materials-list');
+        if (matListEl) {
+            matListEl.innerHTML = '';
+            Object.keys(materials).forEach(matName => {
+                const density = materials[matName];
+                const encodedName = encodeURIComponent(matName);
+                matListEl.innerHTML += `
+                    <div class="admin-row">
+                        <div class="admin-row-info">
+                            <strong>${matName}</strong><br>
+                            <span style="color:#64748b; font-size:0.8rem;">الكثافة: ${density} جم/سم³</span>
+                        </div>
+                        <div class="admin-row-actions">
+                            <button class="btn btn-edit" onclick="startEditMaterial(decodeURIComponent('${encodedName}'))">تعديل</button>
+                            <button class="btn btn-danger" onclick="deleteMaterial(decodeURIComponent('${encodedName}'))">حذف</button>
+                        </div>
+                    </div>
+                `;
+            });
+        }
+
+        const shapeListEl = document.getElementById('admin-shapes-list');
+        if (shapeListEl) {
+            shapeListEl.innerHTML = '';
+            Object.keys(shapes).forEach(shapeName => {
+                const dimsText = (shapes[shapeName] || []).join(' / ');
+                const encodedShape = encodeURIComponent(shapeName);
+                shapeListEl.innerHTML += `
+                    <div class="admin-row">
+                        <div class="admin-row-info">
+                            <strong>${shapeName}</strong><br>
+                            <span style="color:#64748b; font-size:0.8rem;">الأبعاد: ${dimsText}</span>
+                        </div>
+                        <div class="admin-row-actions">
+                            <button class="btn btn-edit" onclick="startEditShape(decodeURIComponent('${encodedShape}'))">تعديل</button>
+                            <button class="btn btn-danger" onclick="deleteShape(decodeURIComponent('${encodedShape}'))">حذف</button>
+                        </div>
+                    </div>
+                `;
+            });
+        }
+    }
+
+    async function addNewMaterial() {
+        const newMat = document.getElementById('new-material-name').value.trim();
+        const densityRaw = document.getElementById('new-material-density').value.trim();
+        const newDensity = parseFloat(densityRaw);
+
+        if (!newMat) {
+            alert("يرجى إدخال اسم الخامة.");
+            return;
+        }
+        if (materials[newMat] !== undefined) {
+            alert("هذه الخامة موجودة بالفعل. يمكنك تعديلها من القائمة بالأسفل.");
+            return;
+        }
+        if (densityRaw === "" || isNaN(newDensity) || newDensity <= 0) {
+            alert("يرجى إدخال كثافة نوعية صحيحة أكبر من الصفر (جم/سم³).");
+            return;
+        }
+
+        materials[newMat] = newDensity;
+        await saveAndSyncAll();
+        populateDropdowns();
+        updateLiveWeight();
+        renderAdminLists();
+        document.getElementById('new-material-name').value = '';
+        document.getElementById('new-material-density').value = '';
+        alert("تمت إضافة الخامة وكثافتها بنجاح!");
+    }
+
+    function startEditMaterial(matName) {
+        if (materials[matName] === undefined) return;
+        document.getElementById('edit-material-original-name').value = matName;
+        document.getElementById('edit-material-name').value = matName;
+        document.getElementById('edit-material-density').value = materials[matName];
+        const panel = document.getElementById('edit-material-panel');
+        panel.style.display = 'block';
+        panel.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+
+    function cancelEditMaterial() {
+        document.getElementById('edit-material-panel').style.display = 'none';
+        document.getElementById('edit-material-original-name').value = '';
+        document.getElementById('edit-material-name').value = '';
+        document.getElementById('edit-material-density').value = '';
+    }
+
+    async function saveEditedMaterial() {
+        const oldName = document.getElementById('edit-material-original-name').value;
+        const newName = document.getElementById('edit-material-name').value.trim();
+        const densityRaw = document.getElementById('edit-material-density').value.trim();
+        const newDensity = parseFloat(densityRaw);
+
+        if (!newName) {
+            alert("يرجى إدخال اسم الخامة.");
+            return;
+        }
+        if (newName !== oldName && materials[newName] !== undefined) {
+            alert("يوجد خامة أخرى بهذا الاسم بالفعل.");
+            return;
+        }
+        if (densityRaw === "" || isNaN(newDensity) || newDensity <= 0) {
+            alert("يرجى إدخال كثافة نوعية صحيحة أكبر من الصفر.");
+            return;
+        }
+
+        const updatedMaterials = {};
+        Object.keys(materials).forEach(key => {
+            if (key === oldName) {
+                updatedMaterials[newName] = newDensity;
+            } else {
+                updatedMaterials[key] = materials[key];
+            }
+        });
+        materials = updatedMaterials;
+
+        if (newName !== oldName) {
+            records.shortages.forEach(item => {
+                if (item.material === oldName) item.material = newName;
+            });
+            records.purchases.forEach(item => {
+                if (item.material === oldName) item.material = newName;
+            });
+        }
+
+        await saveAndSyncAll();
+        populateDropdowns();
+        updateLiveWeight();
+        renderRecords();
+        renderAdminLists();
+        cancelEditMaterial();
+        alert("تم حفظ تعديل الخامة والكثافة بنجاح!");
+    }
+
+    async function deleteMaterial(matName) {
+        const keys = Object.keys(materials);
+        if (keys.length <= 1) {
+            alert("لا يمكن حذف آخر خامة متبقية في البرنامج.");
+            return;
+        }
+        if (!confirm(`هل أنت متأكد من حذف الخامة "${matName}"؟`)) {
+            return;
+        }
+
+        delete materials[matName];
+        if (document.getElementById('edit-material-original-name').value === matName) {
+            cancelEditMaterial();
+        }
+        await saveAndSyncAll();
+        populateDropdowns();
+        updateLiveWeight();
+        renderAdminLists();
+    }
+
+    async function addNewShape() {
+        const shapeName = document.getElementById('new-shape-name').value.trim();
+        const dimsRaw = document.getElementById('new-shape-dims').value.trim();
+        
+        if (!shapeName || !dimsRaw) {
+            alert("يرجى إدخال اسم الشكل والأبعاد المعرفة له.");
+            return;
+        }
+        if (shapes[shapeName]) {
+            alert("هذا الشكل موجود بالفعل. يمكنك تعديله من القائمة بالأسفل.");
+            return;
+        }
+
+        const dimsArray = dimsRaw.split(',').map(d => d.trim()).filter(d => d !== "");
+        if (dimsArray.length === 0) {
+            alert("يرجى إدخال بُعد واحد على الأقل.");
+            return;
+        }
+
+        shapes[shapeName] = dimsArray;
+        await saveAndSyncAll();
+        populateDropdowns();
+        renderDimensionInputs();
+        updateLiveWeight();
+        renderAdminLists();
+        document.getElementById('new-shape-name').value = '';
+        document.getElementById('new-shape-dims').value = '';
+        alert("تمت إضافة الشكل الهندسي وأبعاده بنجاح!");
+    }
+
+    function startEditShape(shapeName) {
+        if (!shapes[shapeName]) return;
+        document.getElementById('edit-shape-original-name').value = shapeName;
+        document.getElementById('edit-shape-name').value = shapeName;
+        document.getElementById('edit-shape-dims').value = (shapes[shapeName] || []).join(', ');
+        const panel = document.getElementById('edit-shape-panel');
+        panel.style.display = 'block';
+        panel.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+
+    function cancelEditShape() {
+        document.getElementById('edit-shape-panel').style.display = 'none';
+        document.getElementById('edit-shape-original-name').value = '';
+        document.getElementById('edit-shape-name').value = '';
+        document.getElementById('edit-shape-dims').value = '';
+    }
+
+    async function saveEditedShape() {
+        const oldName = document.getElementById('edit-shape-original-name').value;
+        const newName = document.getElementById('edit-shape-name').value.trim();
+        const dimsRaw = document.getElementById('edit-shape-dims').value.trim();
+
+        if (!newName || !dimsRaw) {
+            alert("يرجى إدخال اسم الشكل والأبعاد المعرفة له.");
+            return;
+        }
+        if (newName !== oldName && shapes[newName]) {
+            alert("يوجد شكل هندسي آخر بهذا الاسم بالفعل.");
+            return;
+        }
+
+        const dimsArray = dimsRaw.split(',').map(d => d.trim()).filter(d => d !== "");
+        if (dimsArray.length === 0) {
+            alert("يرجى إدخال بُعد واحد على الأقل.");
+            return;
+        }
+
+        const updatedShapes = {};
+        Object.keys(shapes).forEach(key => {
+            if (key === oldName) {
+                updatedShapes[newName] = dimsArray;
+            } else {
+                updatedShapes[key] = shapes[key];
+            }
+        });
+        shapes = updatedShapes;
+
+        if (newName !== oldName) {
+            records.shortages.forEach(item => {
+                if (item.shape === oldName) item.shape = newName;
+            });
+            records.purchases.forEach(item => {
+                if (item.shape === oldName) item.shape = newName;
+            });
+        }
+
+        await saveAndSyncAll();
+        populateDropdowns();
+        renderDimensionInputs();
+        updateLiveWeight();
+        renderRecords();
+        renderAdminLists();
+        cancelEditShape();
+        alert("تم حفظ تعديل الشكل الهندسي وأبعاده بنجاح!");
+    }
+
+    async function deleteShape(shapeName) {
+        const keys = Object.keys(shapes);
+        if (keys.length <= 1) {
+            alert("لا يمكن حذف آخر شكل هندسي متبقٍ في البرنامج.");
+            return;
+        }
+        if (!confirm(`هل أنت متأكد من حذف الشكل "${shapeName}"؟`)) {
+            return;
+        }
+
+        delete shapes[shapeName];
+        if (document.getElementById('edit-shape-original-name').value === shapeName) {
+            cancelEditShape();
+        }
+        await saveAndSyncAll();
+        populateDropdowns();
+        renderDimensionInputs();
+        updateLiveWeight();
+        renderAdminLists();
+    }
+
+    function downloadFileContent(content, mimeType, fileName) {
+        const blob = new Blob([content], { type: mimeType });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.setAttribute("href", url);
+        link.setAttribute("download", fileName);
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }
+
+    function exportBackup() {
+        const backupPayload = {
+            appName: APP_FULL_NAME,
+            version: "v3",
+            exportedAt: new Date().toISOString(),
+            shapes: shapes,
+            materials: materials,
+            records: records
+        };
+        const jsonText = JSON.stringify(backupPayload, null, 2);
+        const todayStr = new Date().toISOString().split('T')[0];
+        downloadFileContent(jsonText, 'application/json;charset=utf-8;', `superpack_backup_${todayStr}.json`);
+    }
+
+    function triggerRestoreFile() {
+        const fileInput = document.getElementById('restore-file-input');
+        fileInput.value = '';
+        fileInput.click();
+    }
+
+    function importBackup(event) {
+        const file = event.target.files && event.target.files[0];
+        if (!file) return;
+
+        const reader = new FileReader();
+        reader.onload = async function(e) {
+            try {
+                const parsed = JSON.parse(e.target.result);
+                if (
+                    !parsed ||
+                    typeof parsed !== 'object' ||
+                    !parsed.shapes || typeof parsed.shapes !== 'object' ||
+                    !parsed.materials || typeof parsed.materials !== 'object' ||
+                    !parsed.records || !Array.isArray(parsed.records.shortages) || !Array.isArray(parsed.records.purchases)
+                ) {
+                    alert("ملف النسخة الاحتياطية غير صالح أو ينقصه بيانات أساسية.");
+                    return;
+                }
+
+                if (!confirm("سيتم استبدال البيانات الحالية ببيانات النسخة الاحتياطية ومزامنتها. هل تريد المتابعة؟")) {
+                    return;
+                }
+
+                shapes = parsed.shapes;
+                materials = parsed.materials;
+                records = {
+                    shortages: parsed.records.shortages,
+                    purchases: parsed.records.purchases
+                };
+
+                await saveAndSyncAll();
+                populateDropdowns();
+                renderDimensionInputs();
+                updateLiveWeight();
+                renderRecords();
+                renderAdminLists();
+
+                alert("تمت استعادة النسخة الاحتياطية ومزامنتها بنجاح!");
+            } catch (err) {
+                alert("تعذر قراءة الملف. تأكد من اختيار ملف JSON سليم تم تصديره من التطبيق.");
+            }
+        };
+        reader.readAsText(file, 'utf-8');
+    }
+
+    function exportToExcel() {
+        const currentList = records[currentTab];
+        if (currentList.length === 0) {
+            alert("القائمة فارغة، لا يوجد شيء لتصديره.");
+            return;
+        }
+
+        let csvContent = "\uFEFF";
+        if (currentTab === 'shortages') {
+            csvContent += "تاريخ النقص,الشكل الهندسي,الأبعاد والوحدات,نوع الخامة,الكمية,الوزن التقريبي (كجم)\n";
+            currentList.forEach(item => {
+                csvContent += `"${item.date}","${item.shape}","${item.dimensions}","${item.material}","${item.qty}","${item.weight || 0}"\n`;
+            });
+        } else {
+            csvContent += "تاريخ الشراء,تاريخ الطلب,الشكل الهندسي,الأبعاد والوحدات,نوع الخامة,الكمية,الوزن التقريبي (كجم)\n";
+            currentList.forEach(item => {
+                csvContent += `"${item.purchaseDate || item.date}","${item.date}","${item.shape}","${item.dimensions}","${item.material}","${item.qty}","${item.weight || 0}"\n`;
+            });
+        }
+
+        const fileName = currentTab === 'shortages' ? 'نواقص_سوبرباك.csv' : 'مشتريات_سوبرباك.csv';
+        downloadFileContent(csvContent, 'text/csv;charset=utf-8;', fileName);
+    }
+</script>
+
+</body>
+</html>
