@@ -9,6 +9,7 @@
     <meta name="theme-color" content="#1e3a8a">
     <link rel="manifest" href="./manifest.json">
     <link rel="icon" type="image/png" sizes="192x192" href="./icon-192.png">
+    <link rel="icon" type="image/png" sizes="512x512" href="./icon-512.png">
     <link rel="apple-touch-icon" sizes="192x192" href="./icon-192.png">
     <title>سوبرباك - تسجيل خامات لتصنيع ماكينات التعبئة والتغليف</title>
     <style>
@@ -43,11 +44,23 @@
             text-align: center;
         }
         .login-logo {
-            max-height: 76px;
-            max-width: 220px;
+            max-height: 88px;
+            max-width: 160px;
             object-fit: contain;
             margin: 0 auto 12px;
             display: block;
+            border-radius: 10px;
+        }
+        .login-fallback-badge {
+            display: none;
+            margin: 0 auto 12px;
+            padding: 10px 18px;
+            border-radius: 10px;
+            background: #eff6ff;
+            border: 1px dashed #2563eb;
+            color: var(--primary);
+            font-weight: 800;
+            font-size: 1.05rem;
         }
         .login-title {
             margin: 0 0 6px;
@@ -91,12 +104,21 @@
             gap: 8px;
         }
         .header-logo {
-            max-height: 54px;
-            max-width: 190px;
+            max-height: 60px;
+            max-width: 120px;
             object-fit: contain;
             background: #ffffff;
-            padding: 4px 10px;
+            padding: 4px;
             border-radius: 8px;
+        }
+        .header-fallback-badge {
+            display: none;
+            background: #ffffff;
+            color: var(--primary);
+            padding: 4px 12px;
+            border-radius: 8px;
+            font-size: 0.92rem;
+            font-weight: 800;
         }
 
         .sync-bar {
@@ -312,7 +334,8 @@
 <!-- واجهة تسجيل الدخول قبل فتح البرنامج -->
 <div id="login-screen">
     <div class="login-card">
-        <img src="./logo.png" alt="شعار سوبرباك" class="login-logo" onerror="this.style.display='none';">
+        <img id="login-logo-img" alt="شعار سوبرباك" class="login-logo">
+        <div id="login-logo-fallback" class="login-fallback-badge">SUPERPACK — سوبرباك</div>
         <h2 class="login-title">تسجيل الدخول — سوبرباك</h2>
         <p class="login-subtitle">أدخل اسم المستخدم وكلمة المرور لفتح البرنامج</p>
 
@@ -335,11 +358,12 @@
 <!-- محتوى البرنامج الرئيسي -->
 <div id="app-wrapper">
     <header>
-        <img src="./logo.png" alt="شعار سوبرباك" class="header-logo" onerror="this.style.display='none';">
+        <img id="header-logo-img" alt="شعار سوبرباك" class="header-logo">
+        <div id="header-logo-fallback" class="header-fallback-badge">SUPERPACK — سوبرباك</div>
         <span>تسجيل خامات سوبرباك لتصنيع ماكينات التعبئة والتغليف</span>
     </header>
     <div class="sync-bar">
-        <span id="sync-status">v6 — جاهز للعمل</span>
+        <span id="sync-status">v8 — جاهز للعمل</span>
         <div class="sync-actions">
             <button type="button" class="sync-btn" onclick="loadCloudDataOnStartup()">تحديث الآن</button>
             <button type="button" class="logout-btn" onclick="logoutUser()">خروج</button>
@@ -485,6 +509,14 @@
 </div>
 
 <script>
+    // استخدام ملفات اللوجو الموجودة فعلاً في المستودع أولاً
+    const LOGO_CANDIDATES = [
+        "./icon-512.png",
+        "./icon-192.png",
+        "./logo.png",
+        "./logo.jpg"
+    ];
+
     // بيانات الدخول إلى البرنامج (يمكنك تعديلها حسب رغبتك)
     const LOGIN_USER = "superpack";
     const LOGIN_PASS = "2026";
@@ -559,6 +591,58 @@
         "فيبر ابيض": 1.20
     };
 
+    function applyResolvedLogoUrl(resolvedUrl) {
+        const imgs = [
+            document.getElementById('login-logo-img'),
+            document.getElementById('header-logo-img')
+        ];
+        const fallbacks = [
+            document.getElementById('login-logo-fallback'),
+            document.getElementById('header-logo-fallback')
+        ];
+
+        if (resolvedUrl) {
+            imgs.forEach(img => {
+                if (img) {
+                    img.src = resolvedUrl;
+                    img.style.display = 'block';
+                }
+            });
+            fallbacks.forEach(fb => {
+                if (fb) fb.style.display = 'none';
+            });
+        } else {
+            imgs.forEach(img => {
+                if (img) img.style.display = 'none';
+            });
+            fallbacks.forEach(fb => {
+                if (fb) fb.style.display = 'inline-block';
+            });
+        }
+    }
+
+    function setupLogos() {
+        if (!Array.isArray(LOGO_CANDIDATES) || LOGO_CANDIDATES.length === 0) {
+            applyResolvedLogoUrl(null);
+            return;
+        }
+
+        let idx = 0;
+        function tryNextLogo() {
+            if (idx >= LOGO_CANDIDATES.length) {
+                applyResolvedLogoUrl(null);
+                return;
+            }
+            const candidate = LOGO_CANDIDATES[idx++];
+            const probe = new Image();
+            probe.onload = () => applyResolvedLogoUrl(candidate);
+            probe.onerror = tryNextLogo;
+            probe.src = `${candidate}?v=${Date.now()}`;
+        }
+
+        tryNextLogo();
+    }
+
     function safeJsonParse(raw, fallback) {
         try {
             const parsed = JSON.parse(raw);
@@ -577,11 +661,13 @@
     function showLoginScreen() {
         document.getElementById('login-screen').style.display = 'flex';
         document.getElementById('app-wrapper').style.display = 'none';
+        setupLogos();
     }
 
     function showMainAppScreen() {
         document.getElementById('login-screen').style.display = 'none';
         document.getElementById('app-wrapper').style.display = 'block';
+        setupLogos();
         startAppOnce();
     }
 
@@ -608,6 +694,7 @@
     }
 
     function checkAuthOnLoad() {
+        setupLogos();
         if (localStorage.getItem(AUTH_SESSION_KEY) === 'true') {
             showMainAppScreen();
         } else {
@@ -707,11 +794,11 @@
         saveLocalOnly();
         const endpoint = getFirebaseEndpoint();
         if (!endpoint) {
-            setSyncStatus("v6 — وضع محلي");
+            setSyncStatus("v8 — وضع محلي");
             return;
         }
 
-        setSyncStatus("v6 — جاري المزامنة...");
+        setSyncStatus("v8 — جاري المزامنة...");
         try {
             const payload = sanitizeForFirebase();
 
@@ -722,14 +809,14 @@
             }, 6000);
 
             if (res.ok) {
-                setSyncStatus(`v6 — متزامن (نواقص: ${payload.records.shortages.length} | مشتريات: ${payload.records.purchases.length})`);
+                setSyncStatus(`v8 — متزامن (نواقص: ${payload.records.shortages.length} | مشتريات: ${payload.records.purchases.length})`);
             } else {
                 const errText = await res.text();
                 const shortReason = String(errText || '').replace(/\s+/g, ' ').slice(0, 80);
-                setSyncStatus(`v6 — كود ${res.status}: ${shortReason || 'محفوظ محلياً'}`);
+                setSyncStatus(`v8 — كود ${res.status}: ${shortReason || 'محفوظ محلياً'}`);
             }
         } catch (err) {
-            setSyncStatus("v6 — تعذر الرفع (محفوظ محلياً)");
+            setSyncStatus("v8 — تعذر الرفع (محفوظ محلياً)");
         }
     }
 
@@ -737,12 +824,12 @@
         if (isSyncingFromCloud) return;
         const endpoint = getFirebaseEndpoint();
         if (!endpoint) {
-            setSyncStatus("v6 — وضع محلي");
+            setSyncStatus("v8 — وضع محلي");
             return;
         }
 
         isSyncingFromCloud = true;
-        setSyncStatus("v6 — جاري القراءة...");
+        setSyncStatus("v8 — جاري القراءة...");
         try {
             const res = await fetchWithTimeout(`${endpoint}?t=${Date.now()}`, {
                 method: "GET",
@@ -752,7 +839,7 @@
             if (!res.ok) {
                 const errText = await res.text();
                 const shortReason = String(errText || '').replace(/\s+/g, ' ').slice(0, 80);
-                setSyncStatus(`v6 — قراءة كود ${res.status}: ${shortReason}`);
+                setSyncStatus(`v8 — قراءة كود ${res.status}: ${shortReason}`);
                 return;
             }
 
@@ -776,12 +863,12 @@
                 updateLiveWeight();
                 renderRecords();
                 renderAdminLists();
-                setSyncStatus(`v6 — متصل (نواقص: ${records.shortages.length} | مشتريات: ${records.purchases.length})`);
+                setSyncStatus(`v8 — متصل (نواقص: ${records.shortages.length} | مشتريات: ${records.purchases.length})`);
             } else {
-                setSyncStatus("v6 — متصل (لا توجد بيانات مسجلة بعد)");
+                setSyncStatus("v8 — متصل (لا توجد بيانات مسجلة بعد)");
             }
         } catch (err) {
-            setSyncStatus("v6 — تعذر الاتصال بالسحابة");
+            setSyncStatus("v8 — تعذر الاتصال بالسحابة");
         } finally {
             isSyncingFromCloud = false;
         }
@@ -1365,322 +1452,4 @@
             return;
         }
         if (densityRaw === "" || isNaN(newDensity) || newDensity <= 0) {
-            alert("يرجى إدخال كثافة نوعية صحيحة أكبر من الصفر (جم/سم³).");
-            return;
-        }
-
-        materials[newMat] = newDensity;
-        await saveAndSyncAll();
-        populateDropdowns();
-        updateLiveWeight();
-        renderAdminLists();
-        document.getElementById('new-material-name').value = '';
-        document.getElementById('new-material-density').value = '';
-        alert("تمت إضافة الخامة وكثافتها بنجاح!");
-    }
-
-    function startEditMaterial(matName) {
-        if (materials[matName] === undefined) return;
-        document.getElementById('edit-material-original-name').value = matName;
-        document.getElementById('edit-material-name').value = matName;
-        document.getElementById('edit-material-density').value = materials[matName];
-        const panel = document.getElementById('edit-material-panel');
-        panel.style.display = 'block';
-        panel.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    }
-
-    function cancelEditMaterial() {
-        document.getElementById('edit-material-panel').style.display = 'none';
-        document.getElementById('edit-material-original-name').value = '';
-        document.getElementById('edit-material-name').value = '';
-        document.getElementById('edit-material-density').value = '';
-    }
-
-    async function saveEditedMaterial() {
-        const oldName = document.getElementById('edit-material-original-name').value;
-        const newName = document.getElementById('edit-material-name').value.trim();
-        const densityRaw = document.getElementById('edit-material-density').value.trim();
-        const newDensity = parseFloat(densityRaw);
-
-        if (!newName) {
-            alert("يرجى إدخال اسم الخامة.");
-            return;
-        }
-        if (newName !== oldName && materials[newName] !== undefined) {
-            alert("يوجد خامة أخرى بهذا الاسم بالفعل.");
-            return;
-        }
-        if (densityRaw === "" || isNaN(newDensity) || newDensity <= 0) {
-            alert("يرجى إدخال كثافة نوعية صحيحة أكبر من الصفر.");
-            return;
-        }
-
-        const updatedMaterials = {};
-        Object.keys(materials).forEach(key => {
-            if (key === oldName) {
-                updatedMaterials[newName] = newDensity;
-            } else {
-                updatedMaterials[key] = materials[key];
-            }
-        });
-        materials = updatedMaterials;
-
-        if (newName !== oldName) {
-            records.shortages.forEach(item => {
-                if (item.material === oldName) item.material = newName;
-            });
-            records.purchases.forEach(item => {
-                if (item.material === oldName) item.material = newName;
-            });
-        }
-
-        await saveAndSyncAll();
-        populateDropdowns();
-        updateLiveWeight();
-        renderRecords();
-        renderAdminLists();
-        cancelEditMaterial();
-        alert("تم حفظ تعديل الخامة والكثافة بنجاح!");
-    }
-
-    async function deleteMaterial(matName) {
-        const keys = Object.keys(materials);
-        if (keys.length <= 1) {
-            alert("لا يمكن حذف آخر خامة متبقية في البرنامج.");
-            return;
-        }
-        if (!confirm(`هل أنت متأكد من حذف الخامة "${matName}"؟`)) {
-            return;
-        }
-
-        delete materials[matName];
-        if (document.getElementById('edit-material-original-name').value === matName) {
-            cancelEditMaterial();
-        }
-        await saveAndSyncAll();
-        populateDropdowns();
-        updateLiveWeight();
-        renderAdminLists();
-    }
-
-    async function addNewShape() {
-        const shapeName = document.getElementById('new-shape-name').value.trim();
-        const dimsRaw = document.getElementById('new-shape-dims').value.trim();
-        
-        if (!shapeName || !dimsRaw) {
-            alert("يرجى إدخال اسم الشكل والأبعاد المعرفة له.");
-            return;
-        }
-        if (shapes[shapeName]) {
-            alert("هذا الشكل موجود بالفعل. يمكنك تعديله من القائمة بالأسفل.");
-            return;
-        }
-
-        const dimsArray = dimsRaw.split(',').map(d => d.trim()).filter(d => d !== "");
-        if (dimsArray.length === 0) {
-            alert("يرجى إدخال بُعد واحد على الأقل.");
-            return;
-        }
-
-        shapes[shapeName] = dimsArray;
-        await saveAndSyncAll();
-        populateDropdowns();
-        renderDimensionInputs();
-        updateLiveWeight();
-        renderAdminLists();
-        document.getElementById('new-shape-name').value = '';
-        document.getElementById('new-shape-dims').value = '';
-        alert("تمت إضافة الشكل الهندسي وأبعاده بنجاح!");
-    }
-
-    function startEditShape(shapeName) {
-        if (!shapes[shapeName]) return;
-        document.getElementById('edit-shape-original-name').value = shapeName;
-        document.getElementById('edit-shape-name').value = shapeName;
-        document.getElementById('edit-shape-dims').value = (shapes[shapeName] || []).join(', ');
-        const panel = document.getElementById('edit-shape-panel');
-        panel.style.display = 'block';
-        panel.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    }
-
-    function cancelEditShape() {
-        document.getElementById('edit-shape-panel').style.display = 'none';
-        document.getElementById('edit-shape-original-name').value = '';
-        document.getElementById('edit-shape-name').value = '';
-        document.getElementById('edit-shape-dims').value = '';
-    }
-
-    async function saveEditedShape() {
-        const oldName = document.getElementById('edit-shape-original-name').value;
-        const newName = document.getElementById('edit-shape-name').value.trim();
-        const dimsRaw = document.getElementById('edit-shape-dims').value.trim();
-
-        if (!newName || !dimsRaw) {
-            alert("يرجى إدخال اسم الشكل والأبعاد المعرفة له.");
-            return;
-        }
-        if (newName !== oldName && shapes[newName]) {
-            alert("يوجد شكل هندسي آخر بهذا الاسم بالفعل.");
-            return;
-        }
-
-        const dimsArray = dimsRaw.split(',').map(d => d.trim()).filter(d => d !== "");
-        if (dimsArray.length === 0) {
-            alert("يرجى إدخال بُعد واحد على الأقل.");
-            return;
-        }
-
-        const updatedShapes = {};
-        Object.keys(shapes).forEach(key => {
-            if (key === oldName) {
-                updatedShapes[newName] = dimsArray;
-            } else {
-                updatedShapes[key] = shapes[key];
-            }
-        });
-        shapes = updatedShapes;
-
-        if (newName !== oldName) {
-            records.shortages.forEach(item => {
-                if (item.shape === oldName) item.shape = newName;
-            });
-            records.purchases.forEach(item => {
-                if (item.shape === oldName) item.shape = newName;
-            });
-        }
-
-        await saveAndSyncAll();
-        populateDropdowns();
-        renderDimensionInputs();
-        updateLiveWeight();
-        renderRecords();
-        renderAdminLists();
-        cancelEditShape();
-        alert("تم حفظ تعديل الشكل الهندسي وأبعاده بنجاح!");
-    }
-
-    async function deleteShape(shapeName) {
-        const keys = Object.keys(shapes);
-        if (keys.length <= 1) {
-            alert("لا يمكن حذف آخر شكل هندسي متبقٍ في البرنامج.");
-            return;
-        }
-        if (!confirm(`هل أنت متأكد من حذف الشكل "${shapeName}"؟`)) {
-            return;
-        }
-
-        delete shapes[shapeName];
-        if (document.getElementById('edit-shape-original-name').value === shapeName) {
-            cancelEditShape();
-        }
-        await saveAndSyncAll();
-        populateDropdowns();
-        renderDimensionInputs();
-        updateLiveWeight();
-        renderAdminLists();
-    }
-
-    function downloadFileContent(content, mimeType, fileName) {
-        const blob = new Blob([content], { type: mimeType });
-        const url = URL.createObjectURL(blob);
-        const link = document.createElement("a");
-        link.setAttribute("href", url);
-        link.setAttribute("download", fileName);
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-        setTimeout(() => URL.revokeObjectURL(url), 1000);
-    }
-
-    function exportBackup() {
-        const backupPayload = {
-            appName: APP_FULL_NAME,
-            version: "v3",
-            exportedAt: new Date().toISOString(),
-            shapes: shapes,
-            materials: materials,
-            records: records
-        };
-        const jsonText = JSON.stringify(backupPayload, null, 2);
-        const todayStr = new Date().toISOString().split('T')[0];
-        downloadFileContent(jsonText, 'application/json;charset=utf-8;', `superpack_backup_${todayStr}.json`);
-    }
-
-    function triggerRestoreFile() {
-        const fileInput = document.getElementById('restore-file-input');
-        fileInput.value = '';
-        fileInput.click();
-    }
-
-    function importBackup(event) {
-        const file = event.target.files && event.target.files[0];
-        if (!file) return;
-
-        const reader = new FileReader();
-        reader.onload = async function(e) {
-            try {
-                const parsed = JSON.parse(e.target.result);
-                if (
-                    !parsed ||
-                    typeof parsed !== 'object' ||
-                    !parsed.shapes || typeof parsed.shapes !== 'object' ||
-                    !parsed.materials || typeof parsed.materials !== 'object' ||
-                    !parsed.records || !Array.isArray(parsed.records.shortages) || !Array.isArray(parsed.records.purchases)
-                ) {
-                    alert("ملف النسخة الاحتياطية غير صالح أو ينقصه بيانات أساسية.");
-                    return;
-                }
-
-                if (!confirm("سيتم استبدال البيانات الحالية ببيانات النسخة الاحتياطية ومزامنتها. هل تريد المتابعة؟")) {
-                    return;
-                }
-
-                shapes = parsed.shapes;
-                materials = parsed.materials;
-                records = {
-                    shortages: parsed.records.shortages,
-                    purchases: parsed.records.purchases
-                };
-
-                await saveAndSyncAll();
-                populateDropdowns();
-                renderDimensionInputs();
-                updateLiveWeight();
-                renderRecords();
-                renderAdminLists();
-
-                alert("تمت استعادة النسخة الاحتياطية ومزامنتها بنجاح!");
-            } catch (err) {
-                alert("تعذر قراءة الملف. تأكد من اختيار ملف JSON سليم تم تصديره من التطبيق.");
-            }
-        };
-        reader.readAsText(file, 'utf-8');
-    }
-
-    function exportToExcel() {
-        const currentList = records[currentTab];
-        if (currentList.length === 0) {
-            alert("القائمة فارغة، لا يوجد شيء لتصديره.");
-            return;
-        }
-
-        let csvContent = "\uFEFF";
-        if (currentTab === 'shortages') {
-            csvContent += "تاريخ النقص,الشكل الهندسي,الأبعاد والوحدات,نوع الخامة,الكمية,الوزن التقريبي (كجم)\n";
-            currentList.forEach(item => {
-                csvContent += `"${item.date}","${item.shape}","${item.dimensions}","${item.material}","${item.qty}","${item.weight || 0}"\n`;
-            });
-        } else {
-            csvContent += "تاريخ الشراء,تاريخ الطلب,الشكل الهندسي,الأبعاد والوحدات,نوع الخامة,الكمية,الوزن التقريبي (كجم)\n";
-            currentList.forEach(item => {
-                csvContent += `"${item.purchaseDate || item.date}","${item.date}","${item.shape}","${item.dimensions}","${item.material}","${item.qty}","${item.weight || 0}"\n`;
-            });
-        }
-
-        const fileName = currentTab === 'shortages' ? 'نواقص_سوبرباك.csv' : 'مشتريات_سوبرباك.csv';
-        downloadFileContent(csvContent, 'text/csv;charset=utf-8;', fileName);
-    }
-</script>
-
-</body>
-</html>
+            alert("يرجى إدخال كثافة نوعية صحيحة أكبر من الصفر (
