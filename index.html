@@ -146,6 +146,7 @@
             font-size: 0.8rem;
             padding: 6px 12px;
             display: flex;
+            flex-wrap: wrap;
             justify-content: space-between;
             align-items: center;
             gap: 8px;
@@ -155,6 +156,18 @@
             display: flex;
             align-items: center;
             gap: 6px;
+            flex-wrap: wrap;
+        }
+        .save-server-btn {
+            background: var(--success);
+            color: #fff;
+            border: none;
+            border-radius: 4px;
+            padding: 4px 10px;
+            font-size: 0.78rem;
+            font-weight: bold;
+            cursor: pointer;
+            white-space: nowrap;
         }
         .sync-btn {
             background: var(--primary);
@@ -361,7 +374,7 @@
 
         <div id="login-error" class="login-error"></div>
 
-        <form id="login-form" onsubmit="handleUserLogin(event)">
+        <form onsubmit="handleUserLogin(event)">
             <div class="form-group">
                 <label for="login-username">اسم المستخدم:</label>
                 <input type="text" id="login-username" placeholder="أدخل اسم المستخدم" autocomplete="username" required>
@@ -382,8 +395,9 @@
         <span>تسجيل خامات سوبرباك لتصنيع ماكينات التعبئة والتغليف</span>
     </header>
     <div class="sync-bar">
-        <span id="sync-status">v12 — جاهز للعمل</span>
+        <span id="sync-status">v13 — جاهز للعمل</span>
         <div class="sync-actions">
+            <button type="button" class="save-server-btn" onclick="saveToServerNow()">حفظ على السيرفر</button>
             <button type="button" class="sync-btn" onclick="loadCloudDataOnStartup()">تحديث الآن</button>
             <button type="button" class="logout-btn" onclick="logoutUser()">خروج</button>
         </div>
@@ -836,23 +850,23 @@
         }
     }
 
-    async function saveAndSyncAll() {
+    async function saveAndSyncAll(showFeedbackAlert = false) {
         lastLocalEditTime = Date.now();
         saveLocalOnly();
 
         const endpoint = getFirebaseEndpoint();
         if (!endpoint) {
-            setSyncStatus("v12 — وضع محلي");
-            return;
+            setSyncStatus("v13 — وضع محلي");
+            return false;
         }
 
         if (isWritingToCloud) {
             pendingCloudWrite = true;
-            return;
+            return false;
         }
 
         isWritingToCloud = true;
-        setSyncStatus("v12 — جاري حفظ التعديل...");
+        setSyncStatus("v13 — جاري الحفظ على السيرفر...");
         try {
             const syncTs = lastLocalEditTime;
             const payload = sanitizeForFirebase(syncTs);
@@ -865,33 +879,49 @@
 
             if (res.ok) {
                 const timeNow = new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-                setSyncStatus(`v12 — محفوظ ومتزامن ${timeNow} (نواقص: ${payload.records.shortages.length} | مشتريات: ${payload.records.purchases.length})`);
+                setSyncStatus(`v13 — تم الحفظ على السيرفر ${timeNow} (نواقص: ${payload.records.shortages.length} | مشتريات: ${payload.records.purchases.length})`);
+                if (showFeedbackAlert) {
+                    alert("تم حفظ البيانات على السيرفر بنجاح!");
+                }
+                return true;
             } else {
                 const errText = await res.text();
-                const shortReason = String(errText || '').replace(/\s+/g, ' ').slice(0, 80);
-                setSyncStatus(`v12 — كود ${res.status}: ${shortReason || 'محفوظ محلياً'}`);
+                const shortReason = String(errText || '').replace(/\s+/g, ' ').slice(0, 90);
+                setSyncStatus(`v13 — خطأ سيرفر ${res.status}: ${shortReason || 'تعذر الحفظ'}`);
+                if (showFeedbackAlert) {
+                    alert(`تعذر الحفظ على السيرفر (كود ${res.status}): ${shortReason}`);
+                }
+                return false;
             }
         } catch (err) {
-            setSyncStatus("v12 — تعذر الرفع (البيانات محفوظة محلياً)");
+            setSyncStatus("v13 — تعذر الاتصال بالسيرفر (محفوظ محلياً)");
+            if (showFeedbackAlert) {
+                alert("تعذر الاتصال بالسيرفر حالياً. البيانات محفوظة محلياً على جهازك.");
+            }
+            return false;
         } finally {
             isWritingToCloud = false;
             if (pendingCloudWrite) {
                 pendingCloudWrite = false;
-                await saveAndSyncAll();
+                await saveAndSyncAll(false);
             }
         }
+    }
+
+    async function saveToServerNow() {
+        await saveAndSyncAll(true);
     }
 
     async function loadCloudDataOnStartup() {
         if (isSyncingFromCloud || isWritingToCloud) return;
         const endpoint = getFirebaseEndpoint();
         if (!endpoint) {
-            setSyncStatus("v12 — وضع محلي");
+            setSyncStatus("v13 — وضع محلي");
             return;
         }
 
         isSyncingFromCloud = true;
-        setSyncStatus("v12 — جاري التحديث من السحابة...");
+        setSyncStatus("v13 — جاري التحديث تلقائياً من السيرفر...");
         try {
             const res = await fetchWithTimeout(`${endpoint}?nocache=${Date.now()}`, {
                 method: "GET",
@@ -904,23 +934,15 @@
 
             if (!res.ok) {
                 const errText = await res.text();
-                const shortReason = String(errText || '').replace(/\s+/g, ' ').slice(0, 80);
-                setSyncStatus(`v12 — قراءة كود ${res.status}: ${shortReason}`);
+                const shortReason = String(errText || '').replace(/\s+/g, ' ').slice(0, 90);
+                setSyncStatus(`v13 — خطأ قراءة ${res.status}: ${shortReason}`);
                 return;
             }
 
             const cloudData = await res.json();
 
             if (!cloudData || typeof cloudData !== 'object' || !cloudData.records || typeof cloudData.records !== 'object') {
-                setSyncStatus(`v12 — تم الإبقاء على البيانات الحالية (نواقص: ${records.shortages.length} | مشتريات: ${records.purchases.length})`);
-                return;
-            }
-
-            const cloudTs = Number(cloudData.updatedAtMs) || Date.parse(cloudData.updatedAt || '') || 0;
-            const hasLocalUnsynced = lastLocalEditTime > cloudTs + 500;
-
-            if (hasLocalUnsynced) {
-                await saveAndSyncAll();
+                setSyncStatus(`v13 — لا توجد بيانات بعد على السيرفر (نواقص: ${records.shortages.length} | مشتريات: ${records.purchases.length})`);
                 return;
             }
 
@@ -936,9 +958,8 @@
                 purchases: Array.isArray(cloudData.records.purchases) ? cloudData.records.purchases : records.purchases
             };
 
-            if (cloudTs > 0) {
-                lastLocalEditTime = cloudTs;
-            }
+            const cloudTs = Number(cloudData.updatedAtMs) || Date.parse(cloudData.updatedAt || '') || Date.now();
+            lastLocalEditTime = cloudTs;
 
             saveLocalOnly();
             populateDropdowns();
@@ -948,9 +969,9 @@
             renderAdminLists();
 
             const timeNow = new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-            setSyncStatus(`v12 — محدّث ${timeNow} (نواقص: ${records.shortages.length} | مشتريات: ${records.purchases.length})`);
+            setSyncStatus(`v13 — محدّث تلقائياً ${timeNow} (نواقص: ${records.shortages.length} | مشتريات: ${records.purchases.length})`);
         } catch (err) {
-            setSyncStatus(`v12 — تعذر التحديث (بياناتك المحلية محفوظة: نواقص ${records.shortages.length})`);
+            setSyncStatus(`v13 — تعذر التحديث من السيرفر (البيانات المحلية: نواقص ${records.shortages.length})`);
         } finally {
             isSyncingFromCloud = false;
         }
@@ -1383,7 +1404,7 @@
 
         records.shortages.unshift(newRecord);
         renderRecords();
-        await saveAndSyncAll();
+        await saveAndSyncAll(false);
         
         document.querySelectorAll('.dim-val').forEach(input => input.value = '');
         updateLiveWeight();
@@ -1404,7 +1425,7 @@
             records.shortages.splice(itemIndex, 1);
 
             renderRecords();
-            await saveAndSyncAll();
+            await saveAndSyncAll(false);
             alert("تم نقل الصنف إلى قائمة المشتريات بنجاح!");
         } else {
             renderRecords();
@@ -1455,7 +1476,7 @@
         if (confirm("هل أنت متأكد من حذف هذا البند؟")) {
             records[currentTab] = (records[currentTab] || []).filter(item => item.id !== id);
             renderRecords();
-            await saveAndSyncAll();
+            await saveAndSyncAll(false);
         }
     }
 
@@ -1533,7 +1554,7 @@
         }
 
         materials[newMat] = newDensity;
-        await saveAndSyncAll();
+        await saveAndSyncAll(false);
         populateDropdowns();
         updateLiveWeight();
         renderAdminLists();
@@ -1597,7 +1618,7 @@
             });
         }
 
-        await saveAndSyncAll();
+        await saveAndSyncAll(false);
         populateDropdowns();
         updateLiveWeight();
         renderRecords();
@@ -1620,7 +1641,7 @@
         if (document.getElementById('edit-material-original-name').value === matName) {
             cancelEditMaterial();
         }
-        await saveAndSyncAll();
+        await saveAndSyncAll(false);
         populateDropdowns();
         updateLiveWeight();
         renderAdminLists();
@@ -1646,7 +1667,7 @@
         }
 
         shapes[shapeName] = dimsArray;
-        await saveAndSyncAll();
+        await saveAndSyncAll(false);
         populateDropdowns();
         renderDimensionInputs();
         updateLiveWeight();
@@ -1712,7 +1733,7 @@
             });
         }
 
-        await saveAndSyncAll();
+        await saveAndSyncAll(false);
         populateDropdowns();
         renderDimensionInputs();
         updateLiveWeight();
@@ -1736,7 +1757,7 @@
         if (document.getElementById('edit-shape-original-name').value === shapeName) {
             cancelEditShape();
         }
-        await saveAndSyncAll();
+        await saveAndSyncAll(false);
         populateDropdowns();
         renderDimensionInputs();
         updateLiveWeight();
@@ -1805,7 +1826,7 @@
                     purchases: parsed.records.purchases
                 };
 
-                await saveAndSyncAll();
+                await saveAndSyncAll(false);
                 populateDropdowns();
                 renderDimensionInputs();
                 updateLiveWeight();
