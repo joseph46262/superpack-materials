@@ -387,7 +387,7 @@
         <span>تسجيل خامات سوبرباك لتصنيع ماكينات التعبئة والتغليف</span>
     </header>
     <div class="sync-bar">
-        <span id="sync-status">v10 — جاهز للعمل</span>
+        <span id="sync-status">v11 — جاهز للعمل</span>
         <div class="sync-actions">
             <button type="button" class="sync-btn" onclick="loadCloudDataOnStartup()">تحديث الآن</button>
             <button type="button" class="logout-btn" onclick="logoutUser()">خروج</button>
@@ -551,13 +551,14 @@
     const STORAGE_KEYS = {
         shapes: 'ws_shapes_v3',
         materials: 'ws_materials_v3',
-        records: 'ws_records_v3'
+        records: 'ws_records_v3',
+        lastLocalSyncTs: 'ws_last_local_sync_ts_v1'
     };
     let currentTab = 'shortages';
     let isSyncingFromCloud = false;
     let isWritingToCloud = false;
     let pendingCloudWrite = false;
-    let autoSyncTimer = null;
+    let lastLocalEditTime = Number(localStorage.getItem(STORAGE_KEYS.lastLocalSyncTs) || 0);
 
     const defaultShapes = {
         "ماسورة": ["قطر", "سمك", "طول"],
@@ -683,7 +684,6 @@
     if (!Array.isArray(records.purchases)) records.purchases = [];
 
     function showLoginScreen() {
-        stopAutoSync();
         const loginEl = document.getElementById('login-screen');
         const appEl = document.getElementById('app-wrapper');
         if (loginEl) loginEl.style.display = 'flex';
@@ -698,23 +698,6 @@
         if (appEl) appEl.style.display = 'block';
         setupLogos();
         startAppOnce();
-        startAutoSync();
-    }
-
-    function startAutoSync() {
-        stopAutoSync();
-        autoSyncTimer = setInterval(() => {
-            if (isUserLoggedIn() && document.visibilityState === 'visible' && !isWritingToCloud) {
-                loadCloudDataOnStartup(true);
-            }
-        }, 15000);
-    }
-
-    function stopAutoSync() {
-        if (autoSyncTimer) {
-            clearInterval(autoSyncTimer);
-            autoSyncTimer = null;
-        }
     }
 
     function handleUserLogin(event) {
@@ -773,7 +756,7 @@
         return `${cleanBase}/${FIREBASE_NODE_PATH}.json`;
     }
 
-    function fetchWithTimeout(url, options = {}, timeoutMs = 6000) {
+    function fetchWithTimeout(url, options = {}, timeoutMs = 6500) {
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort(), timeoutMs);
         return fetch(url, { ...options, signal: controller.signal }).finally(() => clearTimeout(timer));
@@ -783,7 +766,7 @@
         return String(key || '').replace(/[.#$/[\]]/g, '_').trim();
     }
 
-    function sanitizeForFirebase() {
+    function sanitizeForFirebase(timestampMs) {
         const cleanShapes = {};
         if (shapes && typeof shapes === 'object') {
             Object.keys(shapes).forEach(k => {
@@ -830,7 +813,8 @@
         };
 
         return {
-            updatedAt: new Date().toISOString(),
+            updatedAt: new Date(timestampMs).toISOString(),
+            updatedAtMs: timestampMs,
             shapes: cleanShapes,
             materials: cleanMaterials,
             records: {
@@ -845,16 +829,19 @@
             localStorage.setItem(STORAGE_KEYS.shapes, JSON.stringify(shapes));
             localStorage.setItem(STORAGE_KEYS.materials, JSON.stringify(materials));
             localStorage.setItem(STORAGE_KEYS.records, JSON.stringify(records));
+            localStorage.setItem(STORAGE_KEYS.lastLocalSyncTs, String(lastLocalEditTime));
         } catch (e) {
             console.warn("LocalStorage error:", e);
         }
     }
 
     async function saveAndSyncAll() {
+        lastLocalEditTime = Date.now();
         saveLocalOnly();
+
         const endpoint = getFirebaseEndpoint();
         if (!endpoint) {
-            setSyncStatus("v10 — وضع محلي");
+            setSyncStatus("v11 — وضع محلي");
             return;
         }
 
@@ -864,26 +851,27 @@
         }
 
         isWritingToCloud = true;
-        setSyncStatus("v10 — جاري حفظ التعديل...");
+        setSyncStatus("v11 — جاري حفظ التعديل...");
         try {
-            const payload = sanitizeForFirebase();
+            const syncTs = lastLocalEditTime;
+            const payload = sanitizeForFirebase(syncTs);
 
             const res = await fetchWithTimeout(endpoint, {
                 method: "PUT",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify(payload)
-            }, 6500);
+            }, 7000);
 
             if (res.ok) {
                 const timeNow = new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-                setSyncStatus(`v10 — متزامن ${timeNow} (نواقص: ${payload.records.shortages.length} | مشتريات: ${payload.records.purchases.length})`);
+                setSyncStatus(`v11 — محفوظ ومتزامن ${timeNow} (نواقص: ${payload.records.shortages.length} | مشتريات: ${payload.records.purchases.length})`);
             } else {
                 const errText = await res.text();
                 const shortReason = String(errText || '').replace(/\s+/g, ' ').slice(0, 80);
-                setSyncStatus(`v10 — كود ${res.status}: ${shortReason || 'محفوظ محلياً'}`);
+                setSyncStatus(`v11 — كود ${res.status}: ${shortReason || 'محفوظ محلياً'}`);
             }
         } catch (err) {
-            setSyncStatus("v10 — تعذر الرفع (محفوظ محلياً)");
+            setSyncStatus("v11 — تعذر الرفع (البيانات محفوظة محلياً)");
         } finally {
             isWritingToCloud = false;
             if (pendingCloudWrite) {
@@ -893,16 +881,16 @@
         }
     }
 
-    async function loadCloudDataOnStartup(silentAuto = false) {
+    async function loadCloudDataOnStartup() {
         if (isSyncingFromCloud || isWritingToCloud) return;
         const endpoint = getFirebaseEndpoint();
         if (!endpoint) {
-            setSyncStatus("v10 — وضع محلي");
+            setSyncStatus("v11 — وضع محلي");
             return;
         }
 
         isSyncingFromCloud = true;
-        if (!silentAuto) setSyncStatus("v10 — جاري التحديث من السحابة...");
+        setSyncStatus("v11 — جاري التحديث من السحابة...");
         try {
             const res = await fetchWithTimeout(`${endpoint}?nocache=${Date.now()}`, {
                 method: "GET",
@@ -911,47 +899,58 @@
                     "Cache-Control": "no-cache, no-store, must-revalidate",
                     "Pragma": "no-cache"
                 }
-            }, 6000);
+            }, 6500);
 
             if (!res.ok) {
                 const errText = await res.text();
                 const shortReason = String(errText || '').replace(/\s+/g, ' ').slice(0, 80);
-                setSyncStatus(`v10 — قراءة كود ${res.status}: ${shortReason}`);
+                setSyncStatus(`v11 — قراءة كود ${res.status}: ${shortReason}`);
                 return;
             }
 
             const cloudData = await res.json();
-            if (cloudData && typeof cloudData === 'object') {
-                if (cloudData.shapes && typeof cloudData.shapes === 'object') {
-                    shapes = cloudData.shapes;
-                }
-                if (cloudData.materials && typeof cloudData.materials === 'object') {
-                    materials = cloudData.materials;
-                }
-                if (cloudData.records && typeof cloudData.records === 'object') {
-                    records = {
-                        shortages: Array.isArray(cloudData.records.shortages) ? cloudData.records.shortages : [],
-                        purchases: Array.isArray(cloudData.records.purchases) ? cloudData.records.purchases : []
-                    };
-                } else {
-                    records = { shortages: [], purchases: [] };
-                }
-                saveLocalOnly();
-                populateDropdowns();
-                renderDimensionInputs();
-                updateLiveWeight();
-                renderRecords();
-                renderAdminLists();
-                const timeNow = new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-                setSyncStatus(`v10 — محدّث ${timeNow} (نواقص: ${records.shortages.length} | مشتريات: ${records.purchases.length})`);
-            } else {
-                records = { shortages: [], purchases: [] };
-                saveLocalOnly();
-                renderRecords();
-                setSyncStatus("v10 — متصل (لا توجد بيانات مسجلة)");
+
+            // حماية صارمة: إذا كانت الاستجابة فارغة أو لا تحتوي على سجل صالح، لا نمسح البيانات الحالية
+            if (!cloudData || typeof cloudData !== 'object' || !cloudData.records || typeof cloudData.records !== 'object') {
+                setSyncStatus(`v11 — تم الإبقاء على البيانات الحالية (نواقص: ${records.shortages.length} | مشتريات: ${records.purchases.length})`);
+                return;
             }
+
+            const cloudTs = Number(cloudData.updatedAtMs) || Date.parse(cloudData.updatedAt || '') || 0;
+            const hasLocalUnsynced = lastLocalEditTime > cloudTs + 500;
+
+            if (hasLocalUnsynced) {
+                await saveAndSyncAll();
+                return;
+            }
+
+            if (cloudData.shapes && typeof cloudData.shapes === 'object' && Object.keys(cloudData.shapes).length > 0) {
+                shapes = cloudData.shapes;
+            }
+            if (cloudData.materials && typeof cloudData.materials === 'object' && Object.keys(cloudData.materials).length > 0) {
+                materials = cloudData.materials;
+            }
+
+            records = {
+                shortages: Array.isArray(cloudData.records.shortages) ? cloudData.records.shortages : records.shortages,
+                purchases: Array.isArray(cloudData.records.purchases) ? cloudData.records.purchases : records.purchases
+            };
+
+            if (cloudTs > 0) {
+                lastLocalEditTime = cloudTs;
+            }
+
+            saveLocalOnly();
+            populateDropdowns();
+            renderDimensionInputs();
+            updateLiveWeight();
+            renderRecords();
+            renderAdminLists();
+
+            const timeNow = new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+            setSyncStatus(`v11 — محدّث ${timeNow} (نواقص: ${records.shortages.length} | مشتريات: ${records.purchases.length})`);
         } catch (err) {
-            if (!silentAuto) setSyncStatus("v10 — تعذر الاتصال بالسحابة");
+            setSyncStatus(`v11 — تعذر التحديث (بياناتك المحلية محفوظة: نواقص ${records.shortages.length})`);
         } finally {
             isSyncingFromCloud = false;
         }
@@ -966,13 +965,13 @@
     let appStarted = false;
     function startAppOnce() {
         if (appStarted) {
-            loadCloudDataOnStartup(false);
+            loadCloudDataOnStartup();
             return;
         }
         appStarted = true;
         initAppUI();
         registerServiceWorker();
-        loadCloudDataOnStartup(false);
+        loadCloudDataOnStartup();
     }
 
     function initAppUI() {
@@ -990,12 +989,6 @@
             console.error("UI init error:", e);
         }
     }
-
-    document.addEventListener('visibilitychange', () => {
-        if (document.visibilityState === 'visible' && isUserLoggedIn()) {
-            loadCloudDataOnStartup(false);
-        }
-    });
 
     window.addEventListener('DOMContentLoaded', checkAuthOnLoad);
     if (document.readyState === 'interactive' || document.readyState === 'complete') {
@@ -1574,286 +1567,3 @@
         const newName = document.getElementById('edit-material-name').value.trim();
         const densityRaw = document.getElementById('edit-material-density').value.trim();
         const newDensity = parseFloat(densityRaw);
-
-        if (!newName) {
-            alert("يرجى إدخال اسم الخامة.");
-            return;
-        }
-        if (newName !== oldName && materials[newName] !== undefined) {
-            alert("يوجد خامة أخرى بهذا الاسم بالفعل.");
-            return;
-        }
-        if (densityRaw === "" || isNaN(newDensity) || newDensity <= 0) {
-            alert("يرجى إدخال كثافة نوعية صحيحة أكبر من الصفر.");
-            return;
-        }
-
-        const updatedMaterials = {};
-        Object.keys(materials).forEach(key => {
-            if (key === oldName) {
-                updatedMaterials[newName] = newDensity;
-            } else {
-                updatedMaterials[key] = materials[key];
-            }
-        });
-        materials = updatedMaterials;
-
-        if (newName !== oldName) {
-            records.shortages.forEach(item => {
-                if (item.material === oldName) item.material = newName;
-            });
-            records.purchases.forEach(item => {
-                if (item.material === oldName) item.material = newName;
-            });
-        }
-
-        await saveAndSyncAll();
-        populateDropdowns();
-        updateLiveWeight();
-        renderRecords();
-        renderAdminLists();
-        cancelEditMaterial();
-        alert("تم حفظ تعديل الخامة والكثافة بنجاح!");
-    }
-
-    async function deleteMaterial(matName) {
-        const keys = Object.keys(materials);
-        if (keys.length <= 1) {
-            alert("لا يمكن حذف آخر خامة متبقية في البرنامج.");
-            return;
-        }
-        if (!confirm(`هل أنت متأكد من حذف الخامة "${matName}"؟`)) {
-            return;
-        }
-
-        delete materials[matName];
-        if (document.getElementById('edit-material-original-name').value === matName) {
-            cancelEditMaterial();
-        }
-        await saveAndSyncAll();
-        populateDropdowns();
-        updateLiveWeight();
-        renderAdminLists();
-    }
-
-    async function addNewShape() {
-        const shapeName = document.getElementById('new-shape-name').value.trim();
-        const dimsRaw = document.getElementById('new-shape-dims').value.trim();
-        
-        if (!shapeName || !dimsRaw) {
-            alert("يرجى إدخال اسم الشكل والأبعاد المعرفة له.");
-            return;
-        }
-        if (shapes[shapeName]) {
-            alert("هذا الشكل موجود بالفعل. يمكنك تعديله من القائمة بالأسفل.");
-            return;
-        }
-
-        const dimsArray = dimsRaw.split(',').map(d => d.trim()).filter(d => d !== "");
-        if (dimsArray.length === 0) {
-            alert("يرجى إدخال بُعد واحد على الأقل.");
-            return;
-        }
-
-        shapes[shapeName] = dimsArray;
-        await saveAndSyncAll();
-        populateDropdowns();
-        renderDimensionInputs();
-        updateLiveWeight();
-        renderAdminLists();
-        document.getElementById('new-shape-name').value = '';
-        document.getElementById('new-shape-dims').value = '';
-        alert("تمت إضافة الشكل الهندسي وأبعاده بنجاح!");
-    }
-
-    function startEditShape(shapeName) {
-        if (!shapes[shapeName]) return;
-        document.getElementById('edit-shape-original-name').value = shapeName;
-        document.getElementById('edit-shape-name').value = shapeName;
-        document.getElementById('edit-shape-dims').value = (shapes[shapeName] || []).join(', ');
-        const panel = document.getElementById('edit-shape-panel');
-        panel.style.display = 'block';
-        panel.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    }
-
-    function cancelEditShape() {
-        document.getElementById('edit-shape-panel').style.display = 'none';
-        document.getElementById('edit-shape-original-name').value = '';
-        document.getElementById('edit-shape-name').value = '';
-        document.getElementById('edit-shape-dims').value = '';
-    }
-
-    async function saveEditedShape() {
-        const oldName = document.getElementById('edit-shape-original-name').value;
-        const newName = document.getElementById('edit-shape-name').value.trim();
-        const dimsRaw = document.getElementById('edit-shape-dims').value.trim();
-
-        if (!newName || !dimsRaw) {
-            alert("يرجى إدخال اسم الشكل والأبعاد المعرفة له.");
-            return;
-        }
-        if (newName !== oldName && shapes[newName]) {
-            alert("يوجد شكل هندسي آخر بهذا الاسم بالفعل.");
-            return;
-        }
-
-        const dimsArray = dimsRaw.split(',').map(d => d.trim()).filter(d => d !== "");
-        if (dimsArray.length === 0) {
-            alert("يرجى إدخال بُعد واحد على الأقل.");
-            return;
-        }
-
-        const updatedShapes = {};
-        Object.keys(shapes).forEach(key => {
-            if (key === oldName) {
-                updatedShapes[newName] = dimsArray;
-            } else {
-                updatedShapes[key] = shapes[key];
-            }
-        });
-        shapes = updatedShapes;
-
-        if (newName !== oldName) {
-            records.shortages.forEach(item => {
-                if (item.shape === oldName) item.shape = newName;
-            });
-            records.purchases.forEach(item => {
-                if (item.shape === oldName) item.shape = newName;
-            });
-        }
-
-        await saveAndSyncAll();
-        populateDropdowns();
-        renderDimensionInputs();
-        updateLiveWeight();
-        renderRecords();
-        renderAdminLists();
-        cancelEditShape();
-        alert("تم حفظ تعديل الشكل الهندسي وأبعاده بنجاح!");
-    }
-
-    async function deleteShape(shapeName) {
-        const keys = Object.keys(shapes);
-        if (keys.length <= 1) {
-            alert("لا يمكن حذف آخر شكل هندسي متبقٍ في البرنامج.");
-            return;
-        }
-        if (!confirm(`هل أنت متأكد من حذف الشكل "${shapeName}"؟`)) {
-            return;
-        }
-
-        delete shapes[shapeName];
-        if (document.getElementById('edit-shape-original-name').value === shapeName) {
-            cancelEditShape();
-        }
-        await saveAndSyncAll();
-        populateDropdowns();
-        renderDimensionInputs();
-        updateLiveWeight();
-        renderAdminLists();
-    }
-
-    function downloadFileContent(content, mimeType, fileName) {
-        const blob = new Blob([content], { type: mimeType });
-        const url = URL.createObjectURL(blob);
-        const link = document.createElement("a");
-        link.setAttribute("href", url);
-        link.setAttribute("download", fileName);
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-        setTimeout(() => URL.revokeObjectURL(url), 1000);
-    }
-
-    function exportBackup() {
-        const backupPayload = {
-            appName: APP_FULL_NAME,
-            version: "v3",
-            exportedAt: new Date().toISOString(),
-            shapes: shapes,
-            materials: materials,
-            records: records
-        };
-        const jsonText = JSON.stringify(backupPayload, null, 2);
-        const todayStr = new Date().toISOString().split('T')[0];
-        downloadFileContent(jsonText, 'application/json;charset=utf-8;', `superpack_backup_${todayStr}.json`);
-    }
-
-    function triggerRestoreFile() {
-        const fileInput = document.getElementById('restore-file-input');
-        fileInput.value = '';
-        fileInput.click();
-    }
-
-    function importBackup(event) {
-        const file = event.target.files && event.target.files[0];
-        if (!file) return;
-
-        const reader = new FileReader();
-        reader.onload = async function(e) {
-            try {
-                const parsed = JSON.parse(e.target.result);
-                if (
-                    !parsed ||
-                    typeof parsed !== 'object' ||
-                    !parsed.shapes || typeof parsed.shapes !== 'object' ||
-                    !parsed.materials || typeof parsed.materials !== 'object' ||
-                    !parsed.records || !Array.isArray(parsed.records.shortages) || !Array.isArray(parsed.records.purchases)
-                ) {
-                    alert("ملف النسخة الاحتياطية غير صالح أو ينقصه بيانات أساسية.");
-                    return;
-                }
-
-                if (!confirm("سيتم استبدال البيانات الحالية ببيانات النسخة الاحتياطية ومزامنتها. هل تريد المتابعة؟")) {
-                    return;
-                }
-
-                shapes = parsed.shapes;
-                materials = parsed.materials;
-                records = {
-                    shortages: parsed.records.shortages,
-                    purchases: parsed.records.purchases
-                };
-
-                await saveAndSyncAll();
-                populateDropdowns();
-                renderDimensionInputs();
-                updateLiveWeight();
-                renderRecords();
-                renderAdminLists();
-
-                alert("تمت استعادة النسخة الاحتياطية ومزامنتها بنجاح!");
-            } catch (err) {
-                alert("تعذر قراءة الملف. تأكد من اختيار ملف JSON سليم تم تصديره من التطبيق.");
-            }
-        };
-        reader.readAsText(file, 'utf-8');
-    }
-
-    function exportToExcel() {
-        const currentList = records[currentTab];
-        if (currentList.length === 0) {
-            alert("القائمة فارغة، لا يوجد شيء لتصديره.");
-            return;
-        }
-
-        let csvContent = "\uFEFF";
-        if (currentTab === 'shortages') {
-            csvContent += "تاريخ النقص,الشكل الهندسي,الأبعاد والوحدات,نوع الخامة,الكمية,الوزن التقريبي (كجم)\n";
-            currentList.forEach(item => {
-                csvContent += `"${item.date}","${item.shape}","${item.dimensions}","${item.material}","${item.qty}","${item.weight || 0}"\n`;
-            });
-        } else {
-            csvContent += "تاريخ الشراء,تاريخ الطلب,الشكل الهندسي,الأبعاد والوحدات,نوع الخامة,الكمية,الوزن التقريبي (كجم)\n";
-            currentList.forEach(item => {
-                csvContent += `"${item.purchaseDate || item.date}","${item.date}","${item.shape}","${item.dimensions}","${item.material}","${item.qty}","${item.weight || 0}"\n`;
-            });
-        }
-
-        const fileName = currentTab === 'shortages' ? 'نواقص_سوبرباك.csv' : 'مشتريات_سوبرباك.csv';
-        downloadFileContent(csvContent, 'text/csv;charset=utf-8;', fileName);
-    }
-</script>
-
-</body>
-</html>
