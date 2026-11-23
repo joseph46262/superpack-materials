@@ -145,7 +145,7 @@
         .sync-bar {
             background: #e2e8f0;
             color: #1e293b;
-            font-size: 0.82rem;
+            font-size: 0.8rem;
             padding: 6px 12px;
             display: flex;
             justify-content: space-between;
@@ -387,7 +387,7 @@
         <span>تسجيل خامات سوبرباك لتصنيع ماكينات التعبئة والتغليف</span>
     </header>
     <div class="sync-bar">
-        <span id="sync-status">v9 — جاهز للعمل</span>
+        <span id="sync-status">v10 — جاهز للعمل</span>
         <div class="sync-actions">
             <button type="button" class="sync-btn" onclick="loadCloudDataOnStartup()">تحديث الآن</button>
             <button type="button" class="logout-btn" onclick="logoutUser()">خروج</button>
@@ -533,13 +533,11 @@
 </div>
 
 <script>
-    // ملفات اللوجو الموجودة في المستودع
     const LOGO_CANDIDATES = [
         "./icon-512.png",
         "./icon-192.png"
     ];
 
-    // بيانات الدخول إلى البرنامج
     const LOGIN_USER = "superpack";
     const LOGIN_PASS = "2026";
     const AUTH_SESSION_KEY = "sp_logged_in_v1";
@@ -557,6 +555,9 @@
     };
     let currentTab = 'shortages';
     let isSyncingFromCloud = false;
+    let isWritingToCloud = false;
+    let pendingCloudWrite = false;
+    let autoSyncTimer = null;
 
     const defaultShapes = {
         "ماسورة": ["قطر", "سمك", "طول"],
@@ -682,6 +683,7 @@
     if (!Array.isArray(records.purchases)) records.purchases = [];
 
     function showLoginScreen() {
+        stopAutoSync();
         const loginEl = document.getElementById('login-screen');
         const appEl = document.getElementById('app-wrapper');
         if (loginEl) loginEl.style.display = 'flex';
@@ -696,6 +698,23 @@
         if (appEl) appEl.style.display = 'block';
         setupLogos();
         startAppOnce();
+        startAutoSync();
+    }
+
+    function startAutoSync() {
+        stopAutoSync();
+        autoSyncTimer = setInterval(() => {
+            if (isUserLoggedIn() && document.visibilityState === 'visible' && !isWritingToCloud) {
+                loadCloudDataOnStartup(true);
+            }
+        }, 15000);
+    }
+
+    function stopAutoSync() {
+        if (autoSyncTimer) {
+            clearInterval(autoSyncTimer);
+            autoSyncTimer = null;
+        }
     }
 
     function handleUserLogin(event) {
@@ -754,7 +773,7 @@
         return `${cleanBase}/${FIREBASE_NODE_PATH}.json`;
     }
 
-    function fetchWithTimeout(url, options = {}, timeoutMs = 5000) {
+    function fetchWithTimeout(url, options = {}, timeoutMs = 6000) {
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort(), timeoutMs);
         return fetch(url, { ...options, signal: controller.signal }).finally(() => clearTimeout(timer));
@@ -835,11 +854,17 @@
         saveLocalOnly();
         const endpoint = getFirebaseEndpoint();
         if (!endpoint) {
-            setSyncStatus("v9 — وضع محلي");
+            setSyncStatus("v10 — وضع محلي");
             return;
         }
 
-        setSyncStatus("v9 — جاري المزامنة...");
+        if (isWritingToCloud) {
+            pendingCloudWrite = true;
+            return;
+        }
+
+        isWritingToCloud = true;
+        setSyncStatus("v10 — جاري حفظ التعديل...");
         try {
             const payload = sanitizeForFirebase();
 
@@ -847,40 +872,51 @@
                 method: "PUT",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify(payload)
-            }, 6000);
+            }, 6500);
 
             if (res.ok) {
-                setSyncStatus(`v9 — متزامن (نواقص: ${payload.records.shortages.length} | مشتريات: ${payload.records.purchases.length})`);
+                const timeNow = new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+                setSyncStatus(`v10 — متزامن ${timeNow} (نواقص: ${payload.records.shortages.length} | مشتريات: ${payload.records.purchases.length})`);
             } else {
                 const errText = await res.text();
                 const shortReason = String(errText || '').replace(/\s+/g, ' ').slice(0, 80);
-                setSyncStatus(`v9 — كود ${res.status}: ${shortReason || 'محفوظ محلياً'}`);
+                setSyncStatus(`v10 — كود ${res.status}: ${shortReason || 'محفوظ محلياً'}`);
             }
         } catch (err) {
-            setSyncStatus("v9 — تعذر الرفع (محفوظ محلياً)");
+            setSyncStatus("v10 — تعذر الرفع (محفوظ محلياً)");
+        } finally {
+            isWritingToCloud = false;
+            if (pendingCloudWrite) {
+                pendingCloudWrite = false;
+                await saveAndSyncAll();
+            }
         }
     }
 
-    async function loadCloudDataOnStartup() {
-        if (isSyncingFromCloud) return;
+    async function loadCloudDataOnStartup(silentAuto = false) {
+        if (isSyncingFromCloud || isWritingToCloud) return;
         const endpoint = getFirebaseEndpoint();
         if (!endpoint) {
-            setSyncStatus("v9 — وضع محلي");
+            setSyncStatus("v10 — وضع محلي");
             return;
         }
 
         isSyncingFromCloud = true;
-        setSyncStatus("v9 — جاري القراءة...");
+        if (!silentAuto) setSyncStatus("v10 — جاري التحديث من السحابة...");
         try {
-            const res = await fetchWithTimeout(`${endpoint}?t=${Date.now()}`, {
+            const res = await fetchWithTimeout(`${endpoint}?nocache=${Date.now()}`, {
                 method: "GET",
-                cache: "no-store"
-            }, 5000);
+                cache: "no-store",
+                headers: {
+                    "Cache-Control": "no-cache, no-store, must-revalidate",
+                    "Pragma": "no-cache"
+                }
+            }, 6000);
 
             if (!res.ok) {
                 const errText = await res.text();
                 const shortReason = String(errText || '').replace(/\s+/g, ' ').slice(0, 80);
-                setSyncStatus(`v9 — قراءة كود ${res.status}: ${shortReason}`);
+                setSyncStatus(`v10 — قراءة كود ${res.status}: ${shortReason}`);
                 return;
             }
 
@@ -897,6 +933,8 @@
                         shortages: Array.isArray(cloudData.records.shortages) ? cloudData.records.shortages : [],
                         purchases: Array.isArray(cloudData.records.purchases) ? cloudData.records.purchases : []
                     };
+                } else {
+                    records = { shortages: [], purchases: [] };
                 }
                 saveLocalOnly();
                 populateDropdowns();
@@ -904,12 +942,16 @@
                 updateLiveWeight();
                 renderRecords();
                 renderAdminLists();
-                setSyncStatus(`v9 — متصل (نواقص: ${records.shortages.length} | مشتريات: ${records.purchases.length})`);
+                const timeNow = new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+                setSyncStatus(`v10 — محدّث ${timeNow} (نواقص: ${records.shortages.length} | مشتريات: ${records.purchases.length})`);
             } else {
-                setSyncStatus("v9 — متصل (لا توجد بيانات مسجلة بعد)");
+                records = { shortages: [], purchases: [] };
+                saveLocalOnly();
+                renderRecords();
+                setSyncStatus("v10 — متصل (لا توجد بيانات مسجلة)");
             }
         } catch (err) {
-            setSyncStatus("v9 — تعذر الاتصال بالسحابة");
+            if (!silentAuto) setSyncStatus("v10 — تعذر الاتصال بالسحابة");
         } finally {
             isSyncingFromCloud = false;
         }
@@ -924,13 +966,13 @@
     let appStarted = false;
     function startAppOnce() {
         if (appStarted) {
-            loadCloudDataOnStartup();
+            loadCloudDataOnStartup(false);
             return;
         }
         appStarted = true;
         initAppUI();
         registerServiceWorker();
-        loadCloudDataOnStartup();
+        loadCloudDataOnStartup(false);
     }
 
     function initAppUI() {
@@ -951,7 +993,7 @@
 
     document.addEventListener('visibilitychange', () => {
         if (document.visibilityState === 'visible' && isUserLoggedIn()) {
-            loadCloudDataOnStartup();
+            loadCloudDataOnStartup(false);
         }
     });
 
@@ -1350,11 +1392,11 @@
         };
 
         records.shortages.unshift(newRecord);
+        renderRecords();
         await saveAndSyncAll();
         
         document.querySelectorAll('.dim-val').forEach(input => input.value = '');
         updateLiveWeight();
-        renderRecords();
     }
 
     async function moveToPurchases(id) {
@@ -1371,8 +1413,8 @@
             records.purchases.unshift(item);
             records.shortages.splice(itemIndex, 1);
 
-            await saveAndSyncAll();
             renderRecords();
+            await saveAndSyncAll();
             alert("تم نقل الصنف إلى قائمة المشتريات بنجاح!");
         } else {
             renderRecords();
@@ -1421,9 +1463,9 @@
 
     async function deleteRecord(id) {
         if (confirm("هل أنت متأكد من حذف هذا البند؟")) {
-            records[currentTab] = records[currentTab].filter(item => item.id !== id);
-            await saveAndSyncAll();
+            records[currentTab] = (records[currentTab] || []).filter(item => item.id !== id);
             renderRecords();
+            await saveAndSyncAll();
         }
     }
 
